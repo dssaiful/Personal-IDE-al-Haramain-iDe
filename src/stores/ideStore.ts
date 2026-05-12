@@ -53,6 +53,10 @@ interface IDEState {
   };
   notifications: Notification[];
   installedExtensions: string[];
+  isDevServerRunning: boolean;
+  gitInSync: boolean;
+  lastCommitHash: string;
+  hasShownWelcome: boolean;
   
   setFile: (p: string) => void;
   setWorkspace: (id: string) => void;
@@ -71,6 +75,9 @@ interface IDEState {
   updateFile: (name: string, content: string) => void;
   deleteFile: (name: string) => void;
   renameFile: (oldName: string, newName: string) => void;
+  toggleDevServer: () => void;
+  syncGit: () => void;
+  setHasShownWelcome: (v: boolean) => void;
 }
 
 export const useIDEStore = create<IDEState>()(
@@ -78,11 +85,13 @@ export const useIDEStore = create<IDEState>()(
     immer((set) => ({
       currentFile: 'main.py',
       files: [
-        { name: 'main.py', content: 'print("Hello from Local AI IDE!")' },
-        { name: 'App.tsx', content: 'export default function App() {}' },
-        { name: 'index.css', content: 'body { margin: 0; }' }
+        { name: 'main.py', content: 'print("Hello from Local AI IDE!")\n\n# Autonomous Self-Healing Activated\ndef repair_system(): \n    print("Scanning for errors...")' },
+        { name: 'App.tsx', content: 'import React from "react";\n\nexport default function App() {\n  return <div>Welcome to Autonomous IDE</div>;\n}' },
+        { name: 'package.json', content: '{\n  "name": "autonomous-app",\n  "version": "1.0.0",\n  "dependencies": {\n    "react": "18.2.0"\n  }\n}' },
+        { name: 'README.md', content: '# Autonomous IDE Project\n\nThis project is managed by a Senior AI Engineer.' },
+        { name: 'index.css', content: 'body { margin: 0; background: #000; color: #fff; }' }
       ],
-      openFiles: ['main.py', 'App.tsx'],
+      openFiles: ['main.py', 'App.tsx', 'README.md'],
       workspaceId: 'default-project',
       chatHistories: {
         'default-project': [
@@ -109,6 +118,10 @@ export const useIDEStore = create<IDEState>()(
       },
       notifications: [],
       installedExtensions: [],
+      isDevServerRunning: false,
+      gitInSync: true,
+      lastCommitHash: '8f2a1c7',
+      hasShownWelcome: false,
       setFile: (p) => set((s) => { 
         s.currentFile = p; 
         if (p && !s.openFiles.includes(p)) {
@@ -204,6 +217,24 @@ export const useIDEStore = create<IDEState>()(
           const id = Math.random().toString(36).substring(2, 9);
           s.agentLogs.unshift({ id, type: 'info', message: `Renamed ${oldName} to ${newName}`, timestamp: Date.now() });
         }
+      }),
+      toggleDevServer: () => set((s) => {
+        s.isDevServerRunning = !s.isDevServerRunning;
+        const msg = s.isDevServerRunning ? 'Dev server started on port 3000' : 'Dev server stopped';
+        const type = s.isDevServerRunning ? 'success' : 'warning';
+        const id = Math.random().toString(36).substring(2, 9);
+        s.notifications.push({ id, message: msg, type });
+        s.agentLogs.unshift({ id, type, message: msg, timestamp: Date.now() });
+      }),
+      syncGit: () => set((s) => {
+        s.gitInSync = true;
+        s.lastCommitHash = Math.random().toString(16).substring(2, 9);
+        const id = Math.random().toString(36).substring(2, 9);
+        s.notifications.push({ id, message: 'Source Control: Synced with local origin', type: 'success' });
+        s.agentLogs.unshift({ id, type: 'success', message: `Pushed commit ${s.lastCommitHash} to origin`, timestamp: Date.now() });
+      }),
+      setHasShownWelcome: (v: boolean) => set((s) => {
+        s.hasShownWelcome = v;
       }),
       checkOllama: async () => {
         set((s) => { s.ollamaStatus = 'checking'; });

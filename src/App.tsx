@@ -41,7 +41,8 @@ import {
   ShieldCheck,
   ListTodo,
   MoreVertical,
-  Check
+  Check,
+  Bell
 } from 'lucide-react';
 
 const artifactsFile = [
@@ -97,7 +98,7 @@ export default function App() {
     ollamaStatus, localModels, checkOllama, setWorkspace, addNotification, 
     installedExtensions, installExtension, uninstallExtension,
     files, currentFile, setFile, addFile, updateFile, deleteFile, renameFile, agentLogs, addAgentLog,
-    openFiles, closeFile
+    openFiles, closeFile, isDevServerRunning
   } = useIDEStore();
 
   const selectedFileObject = files.find(f => f.name === currentFile) || files[0] || { name: 'untitled.txt', content: '' };
@@ -212,8 +213,8 @@ export default function App() {
         setChatWidth(newWidth);
       } else if (isResizingBottomPanel) {
         let newHeight = window.innerHeight - e.clientY - 24; // StatusBar height
-        if (newHeight < 100) newHeight = 100;
-        if (newHeight > window.innerHeight - 200) newHeight = window.innerHeight - 200;
+        if (newHeight < 30) newHeight = 30; // Allow collapsing almost completely
+        if (newHeight > window.innerHeight * 0.8) newHeight = window.innerHeight * 0.8;
         setBottomPanelHeight(newHeight);
       }
     };
@@ -350,6 +351,10 @@ export default function App() {
         break;
       case 'Open File...':
         handleOpenFile();
+        break;
+      case 'Run Build Task...':
+        addNotification('Project Build Started...', 'info');
+        setTimeout(() => addNotification('Build Completed Successfully', 'success'), 3000);
         break;
       case 'Save':
       case 'Save As...':
@@ -764,7 +769,12 @@ export default function App() {
               language={selectedFileObject.name.endsWith('.py') ? 'python' : selectedFileObject.name.endsWith('.tsx') ? 'typescript' : 'css'}
               theme="vs-dark"
               value={selectedFileObject.content}
-              onChange={(v) => updateFile(selectedFileObject.name, v || '')}
+              onChange={(v) => {
+                  updateFile(selectedFileObject.name, v || '');
+                  if (useIDEStore.getState().gitInSync) {
+                      useIDEStore.setState({ gitInSync: false });
+                  }
+              }}
               options={{
                 minimap: { enabled: false },
                 fontSize: 14,
@@ -818,11 +828,20 @@ export default function App() {
             
             <div className="p-2 font-mono text-xs text-gray-300 flex-1 overflow-y-auto">
               {bottomPanelTab === 'terminal' && (
-                <>
-                  {terminalType === 'powershell' && <div><span className="text-green-400">PS C:\Users\user\local-ai-ide</span>&gt; </div>}
-                  {terminalType === 'cmd' && <div><span className="text-green-400">C:\Users\user\local-ai-ide</span>&gt; </div>}
-                  {terminalType === 'bash' && <div><span className="text-green-400">user@desktop</span>:<span className="text-blue-400">~/local-ai-ide</span>$ </div>}
-                </>
+                <div className="flex flex-col gap-1">
+                  {terminalType === 'powershell' && <div><span className="text-green-400">PS C:\Users\user\local-ai-ide</span>&gt; {isDevServerRunning ? 'npm run dev' : ''}</div>}
+                  {terminalType === 'cmd' && <div><span className="text-green-400">C:\Users\user\local-ai-ide</span>&gt; {isDevServerRunning ? 'npm run dev' : ''}</div>}
+                  {terminalType === 'bash' && <div><span className="text-green-400">user@desktop</span>:<span className="text-blue-400">~/local-ai-ide</span>$ {isDevServerRunning ? 'npm run dev' : ''}</div>}
+                  
+                  {isDevServerRunning && (
+                    <div className="mt-2 text-gray-400 space-y-0.5">
+                      <div className="text-blue-400 font-bold">VITE v5.2.11  ready in 142 ms</div>
+                      <div>➜  Local:   <span className="text-ide-accent">http://localhost:3000/</span></div>
+                      <div>➜  Network: use --host to expose</div>
+                      <div className="text-gray-500 mt-2">12:52:43 PM [vite] hot updated: /src/App.tsx</div>
+                    </div>
+                  )}
+                </div>
               )}
               {bottomPanelTab === 'output' && (
                 <div className="text-gray-400">
@@ -841,13 +860,13 @@ export default function App() {
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="bg-[#252526] p-3 rounded border border-ide-border">
                       <div className="text-[10px] text-gray-500 uppercase mb-1">Process Stability</div>
-                      <div className="text-lg font-bold text-green-400">99.9%</div>
-                      <div className="text-[10px] text-gray-600">All subsystems nominal</div>
+                      <div className={`text-lg font-bold ${isDevServerRunning ? 'text-green-400' : 'text-gray-400'}`}>{isDevServerRunning ? '99.9%' : 'OFFLINE'}</div>
+                      <div className="text-[10px] text-gray-600">{isDevServerRunning ? 'All subsystems nominal' : 'Dev server not active'}</div>
                     </div>
                     <div className="bg-[#252526] p-3 rounded border border-ide-border">
                       <div className="text-[10px] text-gray-500 uppercase mb-1">Memory Usage</div>
-                      <div className="text-lg font-bold text-blue-400">242 MB</div>
-                      <div className="text-[10px] text-gray-600">Healthy range for IDE host</div>
+                      <div className={`text-lg font-bold ${isDevServerRunning ? 'text-blue-400' : 'text-gray-400'}`}>{isDevServerRunning ? '242 MB' : '0 MB'}</div>
+                      <div className="text-[10px] text-gray-600">{isDevServerRunning ? 'Healthy range for IDE host' : 'Processes suspended'}</div>
                     </div>
                     <div className="bg-[#252526] p-3 rounded border border-ide-border">
                       <div className="text-[10px] text-gray-500 uppercase mb-1">AI Engine Latency</div>
@@ -871,8 +890,8 @@ export default function App() {
               )}
             </div>
             
-            {/* Resizer Handle */}
-            <div className="absolute -top-1 left-0 right-0 h-2 cursor-ns-resize hover:bg-ide-accent/50 transition-colors z-50 rounded" onMouseDown={(e) => { e.preventDefault(); setIsResizingBottomPanel(true); }}></div>
+            <div className="absolute -top-1.5 left-0 right-0 h-3 cursor-ns-resize hover:bg-ide-accent/50 transition-colors z-[100] rounded" 
+                 onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); setIsResizingBottomPanel(true); }}></div>
           </div>
           )}
         </div>
@@ -1038,6 +1057,39 @@ export default function App() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* Bottom Status Bar */}
+      <div className="h-6 bg-ide-accent text-white flex items-center justify-between px-3 text-[11px] font-medium z-50">
+        <div className="flex items-center gap-4 h-full">
+          <div className="flex items-center gap-1.5 hover:bg-white/10 px-2 h-full transition-colors cursor-pointer">
+            <GitBranch size={13} />
+            <span>main*</span>
+          </div>
+          <div className="flex items-center gap-1.5 hover:bg-white/10 px-2 h-full transition-colors cursor-pointer">
+            <RefreshCw size={13} className={isDevServerRunning ? 'animate-spin' : ''} />
+            <span>{isDevServerRunning ? 'Vite Dev Running' : 'Server Idle'}</span>
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-4 h-full">
+          <div className="flex items-center gap-1.5 hover:bg-white/10 px-2 h-full transition-colors cursor-pointer">
+            <Bot size={13} />
+            <span>Autonomous Engine: Active</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <span>Ln 42, Col 18</span>
+            <span>Spaces: 2</span>
+            <span>UTF-8</span>
+            <div className="flex items-center gap-1 hover:bg-white/10 px-2 h-full transition-colors cursor-pointer font-bold">
+              <CheckCircle2 size={13} />
+              <span>Prettier</span>
+            </div>
+            <div className="hover:bg-white/10 px-2 h-full transition-colors cursor-pointer">
+               <Bell size={13} />
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

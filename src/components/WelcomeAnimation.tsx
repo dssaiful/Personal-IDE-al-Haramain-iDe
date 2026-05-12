@@ -1,17 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { useIDEStore } from '../stores/ideStore';
 
 export function WelcomeAnimation() {
-  const [isVisible, setIsVisible] = useState(true);
+  const { hasShownWelcome, setHasShownWelcome } = useIDEStore();
+  const [isVisible, setIsVisible] = useState(!hasShownWelcome);
 
   useEffect(() => {
-    // Hide after 3.5 seconds
+    if (hasShownWelcome) return;
+
+    // Hide after 4.5 seconds
     const timer = setTimeout(() => {
       setIsVisible(false);
+      setHasShownWelcome(true);
     }, 4500);
 
     return () => clearTimeout(timer);
-  }, []);
+  }, [hasShownWelcome, setHasShownWelcome]);
+
+  if (hasShownWelcome) return null;
 
   return (
     <AnimatePresence>
@@ -27,16 +34,19 @@ export function WelcomeAnimation() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.5, duration: 1, ease: "easeOut" }}
           >
-            <motion.img 
-              src="https://upload.wikimedia.org/wikipedia/commons/thumb/2/27/Bismillah.svg/1024px-Bismillah.svg.png" 
-              alt="Bismillah"
-              className="w-64 invert opacity-90 sepia-[.3] hue-rotate-[190deg]" // Styling to fit dark mode better
+            <motion.div
+              className="flex flex-col items-center gap-2"
               initial={{ scale: 0.8, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               transition={{ delay: 0.2, duration: 1.5, ease: "easeOut" }}
-            />
+            >
+              {/* Reliable Logo/Symbol for Bismillah */}
+              <div className="text-6xl text-ide-accent mb-2">﷽</div>
+              <div className="text-gray-500 text-xs font-mono uppercase tracking-[0.2em]">Bismillah</div>
+            </motion.div>
+            
             <motion.h1 
-              className="text-2xl font-semibold text-gray-200 tracking-wide font-sans leading-relaxed"
+              className="text-2xl font-semibold text-gray-200 tracking-wide font-sans leading-relaxed px-6"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ delay: 1.5, duration: 1 }}
