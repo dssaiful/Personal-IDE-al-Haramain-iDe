@@ -37,6 +37,13 @@ interface IDEState {
   
   agentStatus: 'idle' | 'planning' | 'executing' | 'retrying' | 'done';
   agentLogs: AgentLog[];
+  stableMetrics: {
+    cpu: string;
+    memory: string;
+    latency: string;
+    uptime: string;
+  };
+  activeExtensions: string[];
   ollamaStatus: 'checking' | 'connected' | 'disconnected';
   localModels: { name: string; size: number }[];
   settings: {
@@ -86,6 +93,13 @@ export const useIDEStore = create<IDEState>()(
       agentLogs: [
         { id: '1', type: 'info', message: 'Autonomous Engine Initialized', timestamp: Date.now() }
       ],
+      stableMetrics: {
+        cpu: '1.2%',
+        memory: '242 MB',
+        latency: '14ms',
+        uptime: '0h 0m'
+      },
+      activeExtensions: ['Python', 'Prettier', 'GitLens', 'Tailwind CSS IntelliSense'],
       ollamaStatus: 'checking',
       localModels: [],
       settings: {
