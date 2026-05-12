@@ -406,16 +406,17 @@ export const SettingsView = () => {
                                 className="w-4 h-4 accent-ide-accent"
                             />
                         </div>
-                        <div className="flex flex-col gap-2">
-                            <span className="text-xs text-gray-300">Inference Engine</span>
+                <div className="flex flex-col gap-2">
+                            <span className="text-xs text-gray-300">Default AI Model</span>
                             <select 
                                 value={settings.aiModel}
                                 onChange={(e) => updateSetting('aiModel', e.target.value)}
                                 className="bg-[#3c3c3c] text-xs text-white p-1.5 rounded outline-none border border-transparent focus:border-ide-accent"
                             >
-                                <option value="gemini-2.0-flash">Gemini 2.0 Flash (Fastest)</option>
-                                <option value="gemini-2.0-pro">Gemini 2.0 Pro (Complex tasks)</option>
-                                <option value="deepseek-v3">DeepSeek V3 (Reasoning)</option>
+                                <option value="ollama-qwen2.5-coder">Ollama: Qwen2.5 Coder (Recommended)</option>
+                                <option value="ollama-llama3">Ollama: Llama 3 (Balanced)</option>
+                                <option value="ollama-deepseek">Ollama: DeepSeek Coder (High Accuracy)</option>
+                                <option value="custom">Custom Local Endpoint</option>
                             </select>
                         </div>
                     </div>
@@ -425,19 +426,15 @@ export const SettingsView = () => {
                     <div className="text-xs font-bold text-green-400 mb-3 uppercase tracking-tighter">Distribution & Build</div>
                     <div className="bg-[#1e1e1e] p-3 rounded border border-ide-border flex flex-col gap-3">
                         <div className="text-[11px] text-gray-300 leading-relaxed">
-                            To run this IDE locally as a high-performance <strong>.exe</strong> file, use the "Export as EXE" feature.
+                            Full Standalone Distribution Engine. All dependencies are bundled.
                         </div>
                         <button 
                             onClick={handleExport}
-                            className="w-full flex items-center justify-center gap-2 py-2 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded transition-colors"
+                            className="w-full flex items-center justify-center gap-2 py-2 bg-ide-accent hover:bg-blue-600 text-white text-xs font-bold rounded transition-colors uppercase"
                         >
                             <Download size={14} />
-                            EXPORT AS LOCAL EXE
+                            Compile Binary for OS
                         </button>
-                        <div className="flex items-center gap-2 justify-center text-[10px] text-gray-500">
-                            <Github size={12} />
-                            Requires VS Build Tools
-                        </div>
                     </div>
                 </section>
 

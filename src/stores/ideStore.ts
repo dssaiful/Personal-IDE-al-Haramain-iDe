@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { persist } from 'zustand/middleware';
+import axios from 'axios';
+
+const BACKEND_URL = ''; // Use same origin (proxied by server.ts or handled by server.ts)
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'tool';
@@ -78,20 +81,16 @@ interface IDEState {
   toggleDevServer: () => void;
   syncGit: () => void;
   setHasShownWelcome: (v: boolean) => void;
+  fetchFiles: () => Promise<void>;
+  saveFileToDisk: (name: string, content: string) => Promise<void>;
 }
 
 export const useIDEStore = create<IDEState>()(
   persist(
     immer((set) => ({
-      currentFile: 'main.py',
-      files: [
-        { name: 'main.py', content: 'print("Hello from Local AI IDE!")\n\n# Autonomous Self-Healing Activated\ndef repair_system(): \n    print("Scanning for errors...")' },
-        { name: 'App.tsx', content: 'import React from "react";\n\nexport default function App() {\n  return <div>Welcome to Autonomous IDE</div>;\n}' },
-        { name: 'package.json', content: '{\n  "name": "autonomous-app",\n  "version": "1.0.0",\n  "dependencies": {\n    "react": "18.2.0"\n  }\n}' },
-        { name: 'README.md', content: '# Autonomous IDE Project\n\nThis project is managed by a Senior AI Engineer.' },
-        { name: 'index.css', content: 'body { margin: 0; background: #000; color: #fff; }' }
-      ],
-      openFiles: ['main.py', 'App.tsx', 'README.md'],
+      currentFile: null,
+      files: [],
+      openFiles: [],
       workspaceId: 'default-project',
       chatHistories: {
         'default-project': [
@@ -236,6 +235,28 @@ export const useIDEStore = create<IDEState>()(
       setHasShownWelcome: (v: boolean) => set((s) => {
         s.hasShownWelcome = v;
       }),
+      fetchFiles: async () => {
+        try {
+          const res = await axios.get(`${BACKEND_URL}/api/files`);
+          const diskFiles = await Promise.all(res.data.map(async (f: any) => {
+            if (f.is_dir) return null;
+            const contentRes = await axios.get(`${BACKEND_URL}/api/file-content`, { params: { path: f.name } });
+            return { name: f.name, content: contentRes.data.content };
+          }));
+          set((s) => {
+            s.files = diskFiles.filter(Boolean) as IDEFile[];
+          });
+        } catch (e) {
+          console.error("Failed to fetch files from desktop core", e);
+        }
+      },
+      saveFileToDisk: async (name, content) => {
+        try {
+          await axios.post(`${BACKEND_URL}/api/save-file`, { path: name, content });
+        } catch (e) {
+          console.error("Failed to save to disk", e);
+        }
+      },
       checkOllama: async () => {
         set((s) => { s.ollamaStatus = 'checking'; });
         try {
@@ -284,7 +305,8 @@ export const useIDEStore = create<IDEState>()(
         settings: state.settings,
         files: state.files,
         openFiles: state.openFiles,
-        installedExtensions: state.installedExtensions
+        installedExtensions: state.installedExtensions,
+        hasShownWelcome: state.hasShownWelcome
       }),
     }
   )

@@ -40,9 +40,12 @@ export function WelcomeAnimation() {
               animate={{ scale: 1, opacity: 1 }}
               transition={{ delay: 0.2, duration: 1.5, ease: "easeOut" }}
             >
-              {/* Reliable Logo/Symbol for Bismillah */}
-              <div className="text-6xl text-ide-accent mb-2">﷽</div>
-              <div className="text-gray-500 text-xs font-mono uppercase tracking-[0.2em]">Bismillah</div>
+              {/* Professional Calligraphy Symbol (Unicode with enhanced styling) */}
+              <div className="flex flex-col items-center">
+                <span className="text-7xl text-ide-accent mb-4 drop-shadow-[0_0_15px_rgba(0,122,204,0.3)]">﷽</span>
+                <div className="h-0.5 w-12 bg-ide-accent/30 rounded-full mb-2"></div>
+                <div className="text-gray-500 text-xs font-mono uppercase tracking-[0.3em] opacity-80">Bismillah</div>
+              </div>
             </motion.div>
             
             <motion.h1 

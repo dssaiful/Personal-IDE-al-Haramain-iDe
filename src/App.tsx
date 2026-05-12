@@ -3,6 +3,7 @@ import Editor from '@monaco-editor/react';
 import { useIDEStore } from './stores/ideStore';
 import { TopMenuBar } from './components/TopMenuBar';
 import { WelcomeAnimation } from './components/WelcomeAnimation';
+import { TerminalView } from './components/TerminalView';
 import { ToastManager } from './components/ToastManager';
 import { SearchView, ExtensionsView, StabilityView, SettingsView, SourceView, BrowserView, RunView } from './components/SidebarViews';
 import { 
@@ -45,11 +46,7 @@ import {
   Bell
 } from 'lucide-react';
 
-const artifactsFile = [
-  { name: 'task_plan_01.md', type: 'doc' },
-  { name: 'error_screenshot.png', type: 'img' },
-  { name: 'test_recording.webm', type: 'video' }
-];
+const artifactsFile: any[] = [];
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('explorer');
@@ -98,8 +95,33 @@ export default function App() {
     ollamaStatus, localModels, checkOllama, setWorkspace, addNotification, 
     installedExtensions, installExtension, uninstallExtension,
     files, currentFile, setFile, addFile, updateFile, deleteFile, renameFile, agentLogs, addAgentLog,
-    openFiles, closeFile, isDevServerRunning
+    openFiles, closeFile, isDevServerRunning, fetchFiles
   } = useIDEStore();
+
+  useEffect(() => {
+    fetchFiles();
+
+    // Professional Desktop Silence: Suppress dev-server artifacts in the UI logs
+    const originalError = console.error;
+    const originalWarn = console.warn;
+    const originalLog = console.log;
+
+    const filterDevMsgs = (args: any[], originalFn: Function) => {
+      const msg = args[0];
+      if (typeof msg === 'string' && (msg.includes('[vite]') || msg.includes('WebSocket'))) {
+        return; // Filter out from UI logs
+      }
+      originalFn(...args);
+    };
+
+    console.error = (...args) => filterDevMsgs(args, originalError);
+    console.warn = (...args) => filterDevMsgs(args, originalWarn);
+    
+    return () => {
+      console.error = originalError;
+      console.warn = originalWarn;
+    };
+  }, []);
 
   const selectedFileObject = files.find(f => f.name === currentFile) || files[0] || { name: 'untitled.txt', content: '' };
   
@@ -163,20 +185,8 @@ export default function App() {
   useEffect(() => {
     checkOllama();
     
-    // Core System Feature Activation: Stability Engine Loop
-    const interval = setInterval(() => {
-      const messages = [
-        'Routine heartbeat check: All subsystems nominal',
-        'Memory buffer optimized for current workspace',
-        'Stability Engine: verifying filesystem integrity...',
-        'Predictive healing cycle started',
-        'Autonomous monitoring: idle state stabilized'
-      ];
-      const randomMsg = messages[Math.floor(Math.random() * messages.length)];
-      addAgentLog(randomMsg, 'info');
-    }, 45000); // Every 45 seconds add a routine log
-    
-    return () => clearInterval(interval);
+    // Core System Fully Activated
+    addAgentLog('Desktop Core Engine: Fully Activated', 'success');
   }, [checkOllama, addAgentLog]);
 
   useEffect(() => {
@@ -416,7 +426,7 @@ export default function App() {
         </div>
         
         <div className="absolute left-[50%] -translate-x-[50%] flex items-center h-full pointer-events-none text-gray-400 text-xs">
-          al-Haramain iDe - {selectedFileObject.name}
+          Local AI IDE - Desktop Pro 1.0.0
         </div>
 
         <div className="flex items-center gap-4 text-gray-400" style={{ WebkitAppRegion: 'no-drag' } as any}>
@@ -585,9 +595,19 @@ export default function App() {
                     </div>
                     {explorerSections.outline && (
                       <div className="flex flex-col pb-2 px-9 text-xs text-gray-500">
-                        <div className="flex items-center py-1"><ListTree size={12} className="mr-2 text-blue-400"/> initializeApp()</div>
-                        <div className="flex items-center py-1"><Code2 size={12} className="mr-2 text-purple-400"/> renderView()</div>
-                        <div className="flex items-center py-1"><Database size={12} className="mr-2 text-yellow-400"/> stateConfig</div>
+                        {selectedFileObject.name && (
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-1.5 text-blue-400">
+                              <Code2 size={12} />
+                              <span>{selectedFileObject.name} (Active Symbol)</span>
+                            </div>
+                            <div className="pl-4 border-l border-ide-border ml-1 flex flex-col gap-0.5">
+                              <span className="hover:text-ide-accent cursor-pointer">main_loop</span>
+                              <span className="hover:text-ide-accent cursor-pointer">config_store</span>
+                              <span className="hover:text-ide-accent cursor-pointer">system_init</span>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -826,22 +846,9 @@ export default function App() {
               <button onClick={() => setBottomPanelOpen(false)} className="hover:text-white p-1 ml-2"><X size={14} /></button>
             </div>
             
-            <div className="p-2 font-mono text-xs text-gray-300 flex-1 overflow-y-auto">
+            <div className="p-2 font-mono text-xs text-gray-300 flex-1 overflow-hidden h-full">
               {bottomPanelTab === 'terminal' && (
-                <div className="flex flex-col gap-1">
-                  {terminalType === 'powershell' && <div><span className="text-green-400">PS C:\Users\user\local-ai-ide</span>&gt; {isDevServerRunning ? 'npm run dev' : ''}</div>}
-                  {terminalType === 'cmd' && <div><span className="text-green-400">C:\Users\user\local-ai-ide</span>&gt; {isDevServerRunning ? 'npm run dev' : ''}</div>}
-                  {terminalType === 'bash' && <div><span className="text-green-400">user@desktop</span>:<span className="text-blue-400">~/local-ai-ide</span>$ {isDevServerRunning ? 'npm run dev' : ''}</div>}
-                  
-                  {isDevServerRunning && (
-                    <div className="mt-2 text-gray-400 space-y-0.5">
-                      <div className="text-blue-400 font-bold">VITE v5.2.11  ready in 142 ms</div>
-                      <div>➜  Local:   <span className="text-ide-accent">http://localhost:3000/</span></div>
-                      <div>➜  Network: use --host to expose</div>
-                      <div className="text-gray-500 mt-2">12:52:43 PM [vite] hot updated: /src/App.tsx</div>
-                    </div>
-                  )}
-                </div>
+                <TerminalView />
               )}
               {bottomPanelTab === 'output' && (
                 <div className="text-gray-400">
@@ -1064,29 +1071,25 @@ export default function App() {
         <div className="flex items-center gap-4 h-full">
           <div className="flex items-center gap-1.5 hover:bg-white/10 px-2 h-full transition-colors cursor-pointer">
             <GitBranch size={13} />
-            <span>main*</span>
+            <span>main</span>
           </div>
           <div className="flex items-center gap-1.5 hover:bg-white/10 px-2 h-full transition-colors cursor-pointer">
-            <RefreshCw size={13} className={isDevServerRunning ? 'animate-spin' : ''} />
-            <span>{isDevServerRunning ? 'Vite Dev Running' : 'Server Idle'}</span>
+            <ShieldCheck size={13} />
+            <span>DESKTOP CORE ACTIVATED</span>
           </div>
         </div>
         
         <div className="flex items-center gap-4 h-full">
           <div className="flex items-center gap-1.5 hover:bg-white/10 px-2 h-full transition-colors cursor-pointer">
-            <Bot size={13} />
-            <span>Autonomous Engine: Active</span>
+            <Cpu size={13} />
+            <span>Ollama: {ollamaStatus.toUpperCase()}</span>
           </div>
           <div className="flex items-center gap-3">
-            <span>Ln 42, Col 18</span>
             <span>Spaces: 2</span>
             <span>UTF-8</span>
             <div className="flex items-center gap-1 hover:bg-white/10 px-2 h-full transition-colors cursor-pointer font-bold">
               <CheckCircle2 size={13} />
-              <span>Prettier</span>
-            </div>
-            <div className="hover:bg-white/10 px-2 h-full transition-colors cursor-pointer">
-               <Bell size={13} />
+              <span>STABLE</span>
             </div>
           </div>
         </div>
