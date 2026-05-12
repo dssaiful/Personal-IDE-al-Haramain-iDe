@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ide-bg: #1e1e1e;
+  --color-ide-sidebar: #252526;
+  --color-ide-activity: #333333;
+  --color-ide-border: #3c3c3c;
+  --color-ide-accent: #007acc;
+  --color-ide-text: #cccccc;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background-color: var(--color-ide-bg);
+  color: var(--color-ide-text);
+}
+
+/* Scrollbar styles to match VS Code */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(121, 121, 121, 0.4);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 100, 100, 0.7);
+}
