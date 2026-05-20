@@ -2,14 +2,18 @@ import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { persist } from 'zustand/middleware';
 import axios from 'axios';
+import { fetchModels, type OllamaModel, type AgentPlan, type AgentTask } from '../services/ai';
 
-const BACKEND_URL = ''; // Use same origin (proxied by server.ts or handled by server.ts)
+const BACKEND_URL = '';
 
 export interface ChatMessage {
+  id: string;
   role: 'user' | 'assistant' | 'tool';
   text: string;
   images?: string[];
   files?: string[];
+  isStreaming?: boolean;
+  timestamp: number;
 }
 
 export interface Notification {
@@ -21,6 +25,8 @@ export interface Notification {
 export interface IDEFile {
   name: string;
   content: string;
+  isDirty?: boolean;
+  savedContent?: string;
 }
 
 export interface AgentLog {
@@ -30,16 +36,34 @@ export interface AgentLog {
   timestamp: number;
 }
 
+export interface FileGenerationRequest {
+  id: string;
+  prompt: string;
+  fileName: string;
+  content: string;
+  status: 'pending' | 'approved' | 'rejected';
+}
+
+export interface RecoveryData {
+  files: IDEFile[];
+  openFiles: string[];
+  currentFile: string | null;
+  chatHistories: Record<string, ChatMessage[]>;
+  timestamp: number;
+}
+
 interface IDEState {
   currentFile: string | null;
   files: IDEFile[];
-  openFiles: string[]; // List of names of open files (tabs)
-  
+  openFiles: string[];
+
   workspaceId: string;
   chatHistories: Record<string, ChatMessage[]>;
-  
+
   agentStatus: 'idle' | 'planning' | 'executing' | 'retrying' | 'done';
   agentLogs: AgentLog[];
+  agentPlan: AgentPlan | null;
+
   stableMetrics: {
     cpu: string;
     memory: string;
@@ -48,11 +72,14 @@ interface IDEState {
   };
   activeExtensions: string[];
   ollamaStatus: 'checking' | 'connected' | 'disconnected';
-  localModels: { name: string; size: number }[];
+  localModels: OllamaModel[];
   settings: {
     autoApplyDiffs: boolean;
     confirmToolCalls: boolean;
     aiModel: string;
+    temperature: number;
+    contextEnabled: boolean;
+    inlineCompletionEnabled: boolean;
   };
   notifications: Notification[];
   installedExtensions: string[];
@@ -60,13 +87,40 @@ interface IDEState {
   gitInSync: boolean;
   lastCommitHash: string;
   hasShownWelcome: boolean;
-  
+
+  // Streaming
+  streamingMessageId: string | null;
+  abortController: AbortController | null;
+
+  // Terminal AI
+  recentTerminalOutput: string;
+
+  // Git AI
+  gitDiff: string;
+
+  // File Generation
+  pendingFileGen: FileGenerationRequest | null;
+
+  // Selected code for context menu AI
+  selectedCode: string;
+
+  // Recovery
+  lastRecovery: RecoveryData | null;
+  sessionStartTime: number;
+
+  // Actions
   setFile: (p: string) => void;
   setWorkspace: (id: string) => void;
   pushChat: (msg: ChatMessage) => void;
+  updateStreamingMessage: (id: string, token: string) => void;
+  finalizeStreamingMessage: (id: string) => void;
   clearChat: () => void;
+  deleteMessage: (id: string) => void;
+  editMessage: (id: string, newText: string) => void;
   setAgentStatus: (s: IDEState['agentStatus']) => void;
   addAgentLog: (msg: string, type?: AgentLog['type']) => void;
+  setAgentPlan: (plan: AgentPlan | null) => void;
+  updateAgentTask: (taskId: string, updates: Partial<AgentTask>) => void;
   updateSetting: <K extends keyof IDEState['settings']>(key: K, value: IDEState['settings'][K]) => void;
   checkOllama: () => Promise<void>;
   addNotification: (message: string, type?: Notification['type']) => void;
@@ -76,6 +130,7 @@ interface IDEState {
   addFile: (file: IDEFile) => void;
   closeFile: (name: string) => void;
   updateFile: (name: string, content: string) => void;
+  markFileDirty: (name: string, dirty: boolean) => void;
   deleteFile: (name: string) => void;
   renameFile: (oldName: string, newName: string) => void;
   toggleDevServer: () => void;
@@ -83,24 +138,37 @@ interface IDEState {
   setHasShownWelcome: (v: boolean) => void;
   fetchFiles: () => Promise<void>;
   saveFileToDisk: (name: string, content: string) => Promise<void>;
+  setAbortController: (controller: AbortController | null) => void;
+  setStreamingMessageId: (id: string | null) => void;
+  setRecentTerminalOutput: (output: string) => void;
+  setGitDiff: (diff: string) => void;
+  setSelectedCode: (code: string) => void;
+  setPendingFileGen: (req: FileGenerationRequest | null) => void;
+  saveRecovery: () => void;
+  restoreFromRecovery: () => boolean;
+}
+
+function genId(): string {
+  return Math.random().toString(36).substring(2, 9);
 }
 
 export const useIDEStore = create<IDEState>()(
   persist(
-    immer((set) => ({
+    immer((set, get) => ({
       currentFile: null,
       files: [],
       openFiles: [],
       workspaceId: 'default-project',
       chatHistories: {
         'default-project': [
-          { role: 'assistant', text: 'Hello! I am your Local AI Engineer running on Ollama. How can I help you code today?' }
+          { id: genId(), role: 'assistant', text: 'Hello! I am your Local AI Engineer running on Ollama. How can I help you code today?', timestamp: Date.now() }
         ]
       },
       agentStatus: 'idle',
       agentLogs: [
         { id: '1', type: 'info', message: 'Autonomous Engine Initialized', timestamp: Date.now() }
       ],
+      agentPlan: null,
       stableMetrics: {
         cpu: '1.2%',
         memory: '242 MB',
@@ -114,6 +182,9 @@ export const useIDEStore = create<IDEState>()(
         autoApplyDiffs: false,
         confirmToolCalls: true,
         aiModel: 'qwen3.6:35b',
+        temperature: 0.7,
+        contextEnabled: true,
+        inlineCompletionEnabled: true,
       },
       notifications: [],
       installedExtensions: [],
@@ -121,43 +192,85 @@ export const useIDEStore = create<IDEState>()(
       gitInSync: true,
       lastCommitHash: '8f2a1c7',
       hasShownWelcome: false,
-      setFile: (p) => set((s) => { 
-        s.currentFile = p; 
+      streamingMessageId: null,
+      abortController: null,
+      recentTerminalOutput: '',
+      gitDiff: '',
+      selectedCode: '',
+      pendingFileGen: null,
+      lastRecovery: null,
+      sessionStartTime: Date.now(),
+
+      setFile: (p) => set((s) => {
+        s.currentFile = p;
         if (p && !s.openFiles.includes(p)) {
           s.openFiles.push(p);
         }
       }),
-      setWorkspace: (id) => set((s) => { 
+      setWorkspace: (id) => set((s) => {
         if (s.workspaceId !== id) {
-          s.workspaceId = id; 
+          s.workspaceId = id;
           if (!s.chatHistories[id]) {
             s.chatHistories[id] = [
-              { role: 'assistant', text: 'Hello! I am your Local AI Engineer. Welcome to this project.' }
+              { id: genId(), role: 'assistant', text: 'Hello! I am your Local AI Engineer. Welcome to this project.', timestamp: Date.now() }
             ];
           }
-          const notfId = Math.random().toString(36).substring(2, 9);
-          s.notifications.push({ id: notfId, message: `Switched to workspace: ${id}`, type: 'info' });
+          s.notifications.push({ id: genId(), message: `Switched to workspace: ${id}`, type: 'info' });
         }
       }),
-      pushChat: (msg) => set((s) => { 
+      pushChat: (msg) => set((s) => {
         if (!s.chatHistories[s.workspaceId]) s.chatHistories[s.workspaceId] = [];
-        s.chatHistories[s.workspaceId].push(msg); 
+        s.chatHistories[s.workspaceId].push(msg);
+      }),
+      updateStreamingMessage: (id, token) => set((s) => {
+        const chat = s.chatHistories[s.workspaceId];
+        if (!chat) return;
+        const msg = chat.find(m => m.id === id);
+        if (msg) {
+          msg.text += token;
+        }
+      }),
+      finalizeStreamingMessage: (id) => set((s) => {
+        const chat = s.chatHistories[s.workspaceId];
+        if (!chat) return;
+        const msg = chat.find(m => m.id === id);
+        if (msg) {
+          msg.isStreaming = false;
+        }
+        s.streamingMessageId = null;
       }),
       clearChat: () => set((s) => {
         s.chatHistories[s.workspaceId] = [
-          { role: 'assistant', text: 'Hello! I am your Local AI Engineer. Chat history cleared.' }
+          { id: genId(), role: 'assistant', text: 'Hello! I am your Local AI Engineer. Chat history cleared.', timestamp: Date.now() }
         ];
       }),
-      setAgentStatus: (s) => set((state) => { state.agentStatus = s; }),
-      addAgentLog: (msg, type = 'info') => set((s) => {
-        const id = Math.random().toString(36).substring(2, 9);
-        s.agentLogs.unshift({ id, type, message: msg, timestamp: Date.now() });
-        if (s.agentLogs.length > 50) s.agentLogs.pop();
+      deleteMessage: (id) => set((s) => {
+        const chat = s.chatHistories[s.workspaceId];
+        if (!chat) return;
+        const idx = chat.findIndex(m => m.id === id);
+        if (idx !== -1) chat.splice(idx, 1);
       }),
-      updateSetting: (key, value) => set((state) => { state.settings[key] = value as any; }),
+      editMessage: (id, newText) => set((s) => {
+        const chat = s.chatHistories[s.workspaceId];
+        if (!chat) return;
+        const msg = chat.find(m => m.id === id);
+        if (msg) msg.text = newText;
+      }),
+      setAgentStatus: (status) => set((state) => { state.agentStatus = status; }),
+      addAgentLog: (msg, type = 'info') => set((s) => {
+        const id = genId();
+        s.agentLogs.unshift({ id, type, message: msg, timestamp: Date.now() });
+        if (s.agentLogs.length > 100) s.agentLogs.pop();
+      }),
+      setAgentPlan: (plan) => set((s) => { s.agentPlan = plan; }),
+      updateAgentTask: (taskId, updates) => set((s) => {
+        if (!s.agentPlan) return;
+        const task = s.agentPlan.tasks.find(t => t.id === taskId);
+        if (task) Object.assign(task, updates);
+      }),
+      updateSetting: (key, value) => set((state) => { state.settings[key] = value as never; }),
       addNotification: (message, type = 'info') => set((state) => {
-        const id = Math.random().toString(36).substring(2, 9);
-        state.notifications.push({ id, message, type });
+        state.notifications.push({ id: genId(), message, type });
       }),
       removeNotification: (id) => set((state) => {
         state.notifications = state.notifications.filter(n => n.id !== id);
@@ -165,20 +278,17 @@ export const useIDEStore = create<IDEState>()(
       installExtension: (id) => set((s) => {
         if (!s.installedExtensions.includes(id)) {
           s.installedExtensions.push(id);
-          const notfId = Math.random().toString(36).substring(2, 9);
-          s.notifications.push({ id: notfId, message: `Extension installed: ${id}`, type: 'success' });
+          s.notifications.push({ id: genId(), message: `Extension installed: ${id}`, type: 'success' });
         }
       }),
       uninstallExtension: (id) => set((s) => {
         s.installedExtensions = s.installedExtensions.filter(e => e !== id);
-        const notfId = Math.random().toString(36).substring(2, 9);
-        s.notifications.push({ id: notfId, message: `Extension uninstalled: ${id}`, type: 'info' });
+        s.notifications.push({ id: genId(), message: `Extension uninstalled: ${id}`, type: 'info' });
       }),
       addFile: (file) => set((s) => {
         if (!s.files.find(f => f.name === file.name)) {
-          s.files.push(file);
-          const id = Math.random().toString(36).substring(2, 9);
-          s.agentLogs.unshift({ id, type: 'success', message: `Created new file: ${file.name}`, timestamp: Date.now() });
+          s.files.push({ ...file, isDirty: false, savedContent: file.content });
+          s.agentLogs.unshift({ id: genId(), type: 'success', message: `Created new file: ${file.name}`, timestamp: Date.now() });
         }
         s.currentFile = file.name;
         if (!s.openFiles.includes(file.name)) {
@@ -195,6 +305,14 @@ export const useIDEStore = create<IDEState>()(
         const file = s.files.find(f => f.name === name);
         if (file) {
           file.content = content;
+          file.isDirty = content !== file.savedContent;
+        }
+      }),
+      markFileDirty: (name, dirty) => set((s) => {
+        const file = s.files.find(f => f.name === name);
+        if (file) {
+          file.isDirty = dirty;
+          if (!dirty) file.savedContent = file.content;
         }
       }),
       deleteFile: (name) => set((s) => {
@@ -203,8 +321,7 @@ export const useIDEStore = create<IDEState>()(
         if (s.currentFile === name) {
           s.currentFile = s.openFiles[s.openFiles.length - 1] || s.files[0]?.name || null;
         }
-        const id = Math.random().toString(36).substring(2, 9);
-        s.agentLogs.unshift({ id, type: 'warning', message: `Deleted file: ${name}`, timestamp: Date.now() });
+        s.agentLogs.unshift({ id: genId(), type: 'warning', message: `Deleted file: ${name}`, timestamp: Date.now() });
       }),
       renameFile: (oldName, newName) => set((s) => {
         const file = s.files.find(f => f.name === oldName);
@@ -213,35 +330,30 @@ export const useIDEStore = create<IDEState>()(
           if (s.currentFile === oldName) s.currentFile = newName;
           const openIndex = s.openFiles.indexOf(oldName);
           if (openIndex !== -1) s.openFiles[openIndex] = newName;
-          const id = Math.random().toString(36).substring(2, 9);
-          s.agentLogs.unshift({ id, type: 'info', message: `Renamed ${oldName} to ${newName}`, timestamp: Date.now() });
+          s.agentLogs.unshift({ id: genId(), type: 'info', message: `Renamed ${oldName} to ${newName}`, timestamp: Date.now() });
         }
       }),
       toggleDevServer: () => set((s) => {
         s.isDevServerRunning = !s.isDevServerRunning;
         const msg = s.isDevServerRunning ? 'Dev server started on port 3000' : 'Dev server stopped';
         const type = s.isDevServerRunning ? 'success' : 'warning';
-        const id = Math.random().toString(36).substring(2, 9);
-        s.notifications.push({ id, message: msg, type });
-        s.agentLogs.unshift({ id, type, message: msg, timestamp: Date.now() });
+        s.notifications.push({ id: genId(), message: msg, type });
+        s.agentLogs.unshift({ id: genId(), type, message: msg, timestamp: Date.now() });
       }),
       syncGit: () => set((s) => {
         s.gitInSync = true;
         s.lastCommitHash = Math.random().toString(16).substring(2, 9);
-        const id = Math.random().toString(36).substring(2, 9);
-        s.notifications.push({ id, message: 'Source Control: Synced with local origin', type: 'success' });
-        s.agentLogs.unshift({ id, type: 'success', message: `Pushed commit ${s.lastCommitHash} to origin`, timestamp: Date.now() });
+        s.notifications.push({ id: genId(), message: 'Source Control: Synced with local origin', type: 'success' });
+        s.agentLogs.unshift({ id: genId(), type: 'success', message: `Pushed commit ${s.lastCommitHash} to origin`, timestamp: Date.now() });
       }),
-      setHasShownWelcome: (v: boolean) => set((s) => {
-        s.hasShownWelcome = v;
-      }),
+      setHasShownWelcome: (v) => set((s) => { s.hasShownWelcome = v; }),
       fetchFiles: async () => {
         try {
           const res = await axios.get(`${BACKEND_URL}/api/files`);
-          const diskFiles = await Promise.all(res.data.map(async (f: any) => {
+          const diskFiles = await Promise.all(res.data.map(async (f: { is_dir: boolean; name: string }) => {
             if (f.is_dir) return null;
             const contentRes = await axios.get(`${BACKEND_URL}/api/file-content`, { params: { path: f.name } });
-            return { name: f.name, content: contentRes.data.content };
+            return { name: f.name, content: contentRes.data.content, isDirty: false, savedContent: contentRes.data.content };
           }));
           set((s) => {
             s.files = diskFiles.filter(Boolean) as IDEFile[];
@@ -253,6 +365,13 @@ export const useIDEStore = create<IDEState>()(
       saveFileToDisk: async (name, content) => {
         try {
           await axios.post(`${BACKEND_URL}/api/save-file`, { path: name, content });
+          set((s) => {
+            const file = s.files.find(f => f.name === name);
+            if (file) {
+              file.isDirty = false;
+              file.savedContent = content;
+            }
+          });
         } catch (e) {
           console.error("Failed to save to disk", e);
         }
@@ -260,54 +379,92 @@ export const useIDEStore = create<IDEState>()(
       checkOllama: async () => {
         set((s) => { s.ollamaStatus = 'checking'; });
         try {
-          const res = await fetch('http://127.0.0.1:11434/api/tags');
-          if (res.ok) {
-            const data = await res.json();
-            set((s) => { 
-              if (s.ollamaStatus !== 'connected') {
-                const id = Math.random().toString(36).substring(2, 9);
-                s.notifications.push({ id, message: `Connected to Local Ollama Instance`, type: 'success' });
+          const models = await fetchModels();
+          if (models.length >= 0) {
+            set((s) => {
+              const wasDisconnected = s.ollamaStatus !== 'connected';
+              s.ollamaStatus = 'connected';
+              s.localModels = models;
+              if (wasDisconnected) {
+                s.notifications.push({ id: genId(), message: `Connected to Local Ollama Instance`, type: 'success' });
               }
-              s.ollamaStatus = 'connected'; 
-              s.localModels = data.models || [];
-              // Auto-select the first available model if current is not in list
               if (s.localModels.length > 0 && (!s.settings.aiModel || !s.localModels.find(m => m.name === s.settings.aiModel))) {
                 s.settings.aiModel = s.localModels[0].name;
               }
             });
-          } else {
-            set((s) => { 
-              if (s.ollamaStatus !== 'disconnected') {
-                const id = Math.random().toString(36).substring(2, 9);
-                s.notifications.push({ id, message: `Ollama is Disconnected`, type: 'error' });
-              }
-              s.ollamaStatus = 'disconnected'; 
-            });
           }
-        } catch (error) {
-          // Fallback for web preview purposes
-          set((s) => { 
+        } catch {
+          set((s) => {
             if (s.ollamaStatus !== 'disconnected') {
-              const id = Math.random().toString(36).substring(2, 9);
-              s.notifications.push({ id, message: `Failed to connect to Ollama`, type: 'error' });
+              s.notifications.push({ id: genId(), message: `Failed to connect to Ollama`, type: 'error' });
             }
-            s.ollamaStatus = 'disconnected'; 
+            s.ollamaStatus = 'disconnected';
             s.localModels = [];
           });
         }
-      }
+      },
+      setAbortController: (controller) => set((s) => { s.abortController = controller; }),
+      setStreamingMessageId: (id) => set((s) => { s.streamingMessageId = id; }),
+      setRecentTerminalOutput: (output) => set((s) => { s.recentTerminalOutput = output; }),
+      setGitDiff: (diff) => set((s) => { s.gitDiff = diff; }),
+      setSelectedCode: (code) => set((s) => { s.selectedCode = code; }),
+      setPendingFileGen: (req) => set((s) => { s.pendingFileGen = req; }),
+      saveRecovery: () => set((s) => {
+        s.lastRecovery = {
+          files: s.files.filter(f => f.isDirty).map(f => ({ name: f.name, content: f.content })),
+          openFiles: [...s.openFiles],
+          currentFile: s.currentFile,
+          chatHistories: s.chatHistories,
+          timestamp: Date.now(),
+        };
+      }),
+      restoreFromRecovery: () => {
+        const state = get();
+        if (!state.lastRecovery) return false;
+        set((s) => {
+          for (const rf of s.lastRecovery!.files) {
+            const existing = s.files.find(f => f.name === rf.name);
+            if (existing) {
+              existing.content = rf.content;
+              existing.isDirty = true;
+            } else {
+              s.files.push({ name: rf.name, content: rf.content, isDirty: true });
+            }
+          }
+          s.openFiles = s.lastRecovery!.openFiles;
+          s.currentFile = s.lastRecovery!.currentFile;
+          s.notifications.push({ id: genId(), message: 'Session restored from recovery data', type: 'success' });
+        });
+        return true;
+      },
     })),
     {
       name: 'local-ai-ide-storage',
-      partialize: (state) => ({ 
-        chatHistories: state.chatHistories, 
+      partialize: (state) => ({
+        chatHistories: state.chatHistories,
         workspaceId: state.workspaceId,
         settings: state.settings,
         files: state.files,
         openFiles: state.openFiles,
         installedExtensions: state.installedExtensions,
-        hasShownWelcome: state.hasShownWelcome
+        hasShownWelcome: state.hasShownWelcome,
+        lastRecovery: state.lastRecovery,
+        sessionStartTime: state.sessionStartTime,
       }),
     }
   )
 );
+
+// Auto-save recovery data periodically
+if (typeof window !== 'undefined') {
+  setInterval(() => {
+    const state = useIDEStore.getState();
+    if (state.files.some(f => f.isDirty)) {
+      state.saveRecovery();
+    }
+  }, 30000);
+
+  window.addEventListener('beforeunload', () => {
+    useIDEStore.getState().saveRecovery();
+  });
+}
