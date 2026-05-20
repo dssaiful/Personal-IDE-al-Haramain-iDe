@@ -6,17 +6,18 @@ import '@xterm/xterm/css/xterm.css';
 
 interface TerminalViewProps {
   socketUrl?: string;
+  onOutput?: (output: string) => void;
 }
 
-export const TerminalView: React.FC<TerminalViewProps> = ({ socketUrl = 'http://localhost:3000' }) => {
+export const TerminalView: React.FC<TerminalViewProps> = ({ socketUrl = 'http://localhost:3000', onOutput }) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const socketRef = useRef<Socket | null>(null);
+  const outputBufferRef = useRef('');
 
   useEffect(() => {
     if (!terminalRef.current) return;
 
-    // Initialize XTerm
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 12,
@@ -36,7 +37,6 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ socketUrl = 'http://
 
     xtermRef.current = term;
 
-    // Initialize Socket
     const socket = io(socketUrl);
     socketRef.current = socket;
 
@@ -46,13 +46,18 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ socketUrl = 'http://
 
     socket.on('data', (data: string) => {
       term.write(data);
+      // Capture last 2000 chars of output for AI context
+      outputBufferRef.current += data;
+      if (outputBufferRef.current.length > 2000) {
+        outputBufferRef.current = outputBufferRef.current.slice(-2000);
+      }
+      onOutput?.(outputBufferRef.current);
     });
 
     term.onData((data) => {
       socket.emit('input', data);
     });
 
-    // Handle Resize
     const handleResize = () => {
       fitAddon.fit();
       socket.emit('resize', { cols: term.cols, rows: term.rows });
@@ -65,7 +70,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ socketUrl = 'http://
       socket.disconnect();
       term.dispose();
     };
-  }, [socketUrl]);
+  }, [socketUrl, onOutput]);
 
   return (
     <div className="w-full h-full bg-[#1e1e1e] overflow-hidden" ref={terminalRef} />

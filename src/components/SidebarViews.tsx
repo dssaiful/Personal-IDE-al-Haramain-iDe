@@ -20,9 +20,12 @@ import {
   Trash2,
   Plus,
   Globe,
-  X
+  X,
+  CheckCircle2,
+  Loader2,
 } from 'lucide-react';
 import { useIDEStore } from '../stores/ideStore';
+import { formatModelSize, pullModel, deleteModel } from '../services/ai';
 
 export const SearchView = () => {
   const [query, setQuery] = useState('');
@@ -57,7 +60,7 @@ export const SearchView = () => {
       </div>
       <div className="flex-1 overflow-y-auto px-4 py-2">
         {query.length > 1 && results.length === 0 && (
-          <div className="text-xs text-gray-500 italic">No results found for "{query}"</div>
+          <div className="text-xs text-gray-500 italic">No results found for &quot;{query}&quot;</div>
         )}
         {results.map(f => (
           <div 
@@ -124,7 +127,7 @@ export const ExtensionsView = () => {
               </div>
               <div className="flex-1 min-w-0">
                 <div className="text-xs font-semibold text-white truncate">{ext}</div>
-                <div className="text-[10px] text-gray-500">v1.2.3 • Enabled</div>
+                <div className="text-[10px] text-gray-500">v1.2.3 &bull; Enabled</div>
               </div>
               {installedExtensions.includes(ext) && (
                   <button 
@@ -153,7 +156,7 @@ export const ExtensionsView = () => {
               <div className="text-[10px] text-gray-400 mt-1 line-clamp-1">{ext.desc}</div>
               <div className="flex items-center gap-2 mt-2">
                 <span className="text-[9px] text-gray-500 font-medium">{ext.author}</span>
-                <span className="text-[9px] text-yellow-500">★ {ext.rating}</span>
+                <span className="text-[9px] text-yellow-500">&star; {ext.rating}</span>
               </div>
             </div>
           ))}
@@ -172,7 +175,7 @@ export const StabilityView = () => {
                     <ShieldCheck size={20} />
                     <span className="text-sm font-bold uppercase tracking-wider">Stability Engine Active</span>
                 </div>
-                <div className="text-[10px] text-gray-500 mb-4 italic">Autonomous Monitoring & Self-Healing</div>
+                <div className="text-[10px] text-gray-500 mb-4 italic">Autonomous Monitoring &amp; Self-Healing</div>
                 
                 <div className="grid grid-cols-2 gap-2">
                     <div className="bg-[#252526] p-2 rounded border border-ide-border">
@@ -221,7 +224,7 @@ export const StabilityView = () => {
                     {logs.slice(0, 3).map(log => (
                       <div key={log.id} className="text-[10px] p-2 bg-[#1e1e1e] rounded border-l-2 border-blue-500">
                           <div className="text-gray-300 font-semibold">{log.message}</div>
-                          <div className="text-gray-600 text-[9px]">{new Date(log.timestamp).toLocaleTimeString()} • Auto-Resolved</div>
+                          <div className="text-gray-600 text-[9px]">{new Date(log.timestamp).toLocaleTimeString()} &bull; Auto-Resolved</div>
                       </div>
                     ))}
                   </div>
@@ -313,8 +316,8 @@ export const BrowserView = () => {
                     <div className="bg-[#1e1e1e] p-3 rounded border border-ide-border">
                         <div className="text-[10px] uppercase text-gray-400 font-bold mb-2">Active Interactions</div>
                         <div className="flex flex-col gap-2">
-                            <div className="text-[10px] text-green-400 bg-green-400/5 p-1 rounded">✓ Page Loaded Successfully</div>
-                            <div className="text-[10px] text-blue-400 bg-blue-400/5 p-1 rounded">ℹ Running lighthouse scan...</div>
+                            <div className="text-[10px] text-green-400 bg-green-400/5 p-1 rounded">Page Loaded Successfully</div>
+                            <div className="text-[10px] text-blue-400 bg-blue-400/5 p-1 rounded">Running lighthouse scan...</div>
                         </div>
                     </div>
                 </div>
@@ -328,7 +331,7 @@ export const RunView = () => {
 
     return (
         <div className="flex flex-col h-full bg-[#252526]">
-            <div className="px-4 py-2 text-[11px] uppercase text-gray-500 font-bold border-b border-ide-border py-4 mb-2">Run & Debug</div>
+            <div className="px-4 py-2 text-[11px] uppercase text-gray-500 font-bold border-b border-ide-border py-4 mb-2">Run &amp; Debug</div>
             <div className="px-4 py-2">
                 <div className="flex flex-col gap-4">
                     <button 
@@ -380,7 +383,7 @@ export const RunView = () => {
 };
 
 export const SettingsView = () => {
-    const { settings, updateSetting, addNotification } = useIDEStore();
+    const { settings, updateSetting, addNotification, localModels, ollamaStatus } = useIDEStore();
 
     const handleExport = () => {
         addNotification("Packaging application into ZIP...", 'info');
@@ -398,7 +401,7 @@ export const SettingsView = () => {
                     <div className="text-xs font-bold text-ide-accent mb-3 uppercase tracking-tighter">AI Assistant</div>
                     <div className="flex flex-col gap-4">
                         <div className="flex items-center justify-between">
-                            <span className="text-xs text-gray-300">Predictive Edits</span>
+                            <span className="text-xs text-gray-300">Auto Apply Diffs</span>
                             <input 
                                 type="checkbox" 
                                 checked={settings.autoApplyDiffs}
@@ -406,24 +409,85 @@ export const SettingsView = () => {
                                 className="w-4 h-4 accent-ide-accent"
                             />
                         </div>
-                <div className="flex flex-col gap-2">
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs text-gray-300">Workspace Context</span>
+                            <input 
+                                type="checkbox" 
+                                checked={settings.contextEnabled}
+                                onChange={(e) => updateSetting('contextEnabled', e.target.checked)}
+                                className="w-4 h-4 accent-ide-accent"
+                            />
+                        </div>
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs text-gray-300">Inline Completions</span>
+                            <input 
+                                type="checkbox" 
+                                checked={settings.inlineCompletionEnabled}
+                                onChange={(e) => updateSetting('inlineCompletionEnabled', e.target.checked)}
+                                className="w-4 h-4 accent-ide-accent"
+                            />
+                        </div>
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs text-gray-300">Confirm Tool Calls</span>
+                            <input 
+                                type="checkbox" 
+                                checked={settings.confirmToolCalls}
+                                onChange={(e) => updateSetting('confirmToolCalls', e.target.checked)}
+                                className="w-4 h-4 accent-ide-accent"
+                            />
+                        </div>
+                        <div className="flex flex-col gap-2">
                             <span className="text-xs text-gray-300">Default AI Model</span>
                             <select 
                                 value={settings.aiModel}
                                 onChange={(e) => updateSetting('aiModel', e.target.value)}
                                 className="bg-[#3c3c3c] text-xs text-white p-1.5 rounded outline-none border border-transparent focus:border-ide-accent"
                             >
-                                <option value="ollama-qwen2.5-coder">Ollama: Qwen2.5 Coder (Recommended)</option>
-                                <option value="ollama-llama3">Ollama: Llama 3 (Balanced)</option>
-                                <option value="ollama-deepseek">Ollama: DeepSeek Coder (High Accuracy)</option>
-                                <option value="custom">Custom Local Endpoint</option>
+                                {localModels.length > 0 ? (
+                                    localModels.map((m) => (
+                                        <option key={m.name} value={m.name}>{m.name}</option>
+                                    ))
+                                ) : (
+                                    <>
+                                        <option value={settings.aiModel}>{settings.aiModel}</option>
+                                        <option value="ollama-qwen2.5-coder">Ollama: Qwen2.5 Coder</option>
+                                        <option value="ollama-llama3">Ollama: Llama 3</option>
+                                        <option value="ollama-deepseek">Ollama: DeepSeek Coder</option>
+                                    </>
+                                )}
                             </select>
+                        </div>
+                        <div className="flex flex-col gap-2">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs text-gray-300">Temperature</span>
+                                <span className="text-xs text-gray-500 font-mono">{settings.temperature.toFixed(1)}</span>
+                            </div>
+                            <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.1"
+                                value={settings.temperature}
+                                onChange={(e) => updateSetting('temperature', parseFloat(e.target.value))}
+                                className="w-full accent-ide-accent"
+                            />
                         </div>
                     </div>
                 </section>
 
                 <section>
-                    <div className="text-xs font-bold text-green-400 mb-3 uppercase tracking-tighter">Distribution & Build</div>
+                    <div className="text-xs font-bold text-green-400 mb-3 uppercase tracking-tighter">Ollama Status</div>
+                    <div className="bg-[#1e1e1e] p-3 rounded border border-ide-border flex items-center gap-3">
+                        <div className={`w-3 h-3 rounded-full ${ollamaStatus === 'connected' ? 'bg-green-500' : ollamaStatus === 'checking' ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`} />
+                        <div>
+                            <div className="text-xs text-white font-semibold">{ollamaStatus.toUpperCase()}</div>
+                            <div className="text-[10px] text-gray-500">{localModels.length} models available</div>
+                        </div>
+                    </div>
+                </section>
+
+                <section>
+                    <div className="text-xs font-bold text-green-400 mb-3 uppercase tracking-tighter">Distribution &amp; Build</div>
                     <div className="bg-[#1e1e1e] p-3 rounded border border-ide-border flex flex-col gap-3">
                         <div className="text-[11px] text-gray-300 leading-relaxed">
                             Full Standalone Distribution Engine. All dependencies are bundled.
@@ -443,15 +507,15 @@ export const SettingsView = () => {
                     <div className="flex flex-col gap-2 text-[10px] text-gray-500 font-mono">
                         <div className="flex justify-between border-b border-[#333] pb-1">
                             <span>Version:</span>
-                            <span>v1.0.4-beta</span>
+                            <span>v2.0.0</span>
                         </div>
                         <div className="flex justify-between border-b border-[#333] pb-1">
-                            <span>Commit:</span>
-                            <span>8f2a1c7</span>
+                            <span>Engine:</span>
+                            <span>Ollama Native</span>
                         </div>
                         <div className="flex justify-between border-b border-[#333] pb-1">
-                            <span>OS:</span>
-                            <span>Windows x64 Build</span>
+                            <span>Mode:</span>
+                            <span>Local First</span>
                         </div>
                         <div className="flex justify-between">
                             <span>Sandbox:</span>
@@ -459,6 +523,146 @@ export const SettingsView = () => {
                         </div>
                     </div>
                 </section>
+            </div>
+        </div>
+    );
+};
+
+export const OllamaView = () => {
+    const { localModels, ollamaStatus, checkOllama, addNotification, settings, updateSetting } = useIDEStore();
+    const [pullName, setPullName] = useState('');
+    const [isPulling, setIsPulling] = useState(false);
+    const [pullProgress, setPullProgress] = useState('');
+
+    const handlePull = async () => {
+        if (!pullName.trim()) return;
+        setIsPulling(true);
+        setPullProgress('Starting download...');
+        addNotification(`Pulling model: ${pullName}`, 'info');
+
+        const success = await pullModel(pullName, (status, completed, total) => {
+            if (completed && total) {
+                const pct = Math.round((completed / total) * 100);
+                setPullProgress(`${status}: ${pct}%`);
+            } else {
+                setPullProgress(status);
+            }
+        });
+
+        setIsPulling(false);
+        setPullProgress('');
+        if (success) {
+            addNotification(`Model ${pullName} pulled successfully`, 'success');
+            await checkOllama();
+            setPullName('');
+        } else {
+            addNotification(`Failed to pull model ${pullName}`, 'error');
+        }
+    };
+
+    const handleDelete = async (name: string) => {
+        if (!window.confirm(`Delete model ${name}?`)) return;
+        const success = await deleteModel(name);
+        if (success) {
+            addNotification(`Model ${name} deleted`, 'success');
+            await checkOllama();
+        } else {
+            addNotification(`Failed to delete ${name}`, 'error');
+        }
+    };
+
+    return (
+        <div className="flex flex-col h-full bg-[#252526]">
+            <div className="px-4 py-4 border-b border-ide-border bg-[#1e1e1e]">
+                <div className="flex items-center gap-2 text-ide-accent mb-2">
+                    <Cpu size={20} />
+                    <span className="text-sm font-bold uppercase tracking-wider">Ollama Models</span>
+                </div>
+                <div className="flex items-center gap-2 mt-2">
+                    <div className={`w-2.5 h-2.5 rounded-full ${ollamaStatus === 'connected' ? 'bg-green-500' : ollamaStatus === 'checking' ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`} />
+                    <span className="text-xs text-gray-400">{ollamaStatus === 'connected' ? 'Connected' : ollamaStatus === 'checking' ? 'Checking...' : 'Disconnected'}</span>
+                    <button onClick={() => checkOllama()} className="ml-auto text-xs text-ide-accent hover:text-blue-300">Refresh</button>
+                </div>
+            </div>
+
+            {/* Pull Model */}
+            <div className="px-4 py-3 border-b border-ide-border">
+                <div className="text-[10px] uppercase text-gray-400 font-bold mb-2">Pull Model</div>
+                <div className="flex gap-2">
+                    <input
+                        type="text"
+                        value={pullName}
+                        onChange={(e) => setPullName(e.target.value)}
+                        placeholder="e.g., qwen3.6:35b"
+                        className="flex-1 bg-[#3c3c3c] border border-ide-border rounded px-3 py-1.5 text-xs text-white outline-none focus:border-ide-accent"
+                        disabled={isPulling}
+                    />
+                    <button
+                        onClick={handlePull}
+                        disabled={isPulling || !pullName.trim()}
+                        className="px-3 py-1.5 bg-ide-accent hover:bg-blue-600 text-white text-xs font-bold rounded disabled:opacity-50 flex items-center gap-1"
+                    >
+                        {isPulling ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                        Pull
+                    </button>
+                </div>
+                {pullProgress && (
+                    <div className="text-[10px] text-ide-accent mt-1">{pullProgress}</div>
+                )}
+            </div>
+
+            {/* Installed Models */}
+            <div className="flex-1 overflow-y-auto px-4 py-3">
+                <div className="text-[10px] uppercase text-gray-400 font-bold mb-2">Installed ({localModels.length})</div>
+                <div className="flex flex-col gap-2">
+                    {localModels.map((model) => (
+                        <div
+                            key={model.name}
+                            className={`bg-[#1e1e1e] p-3 rounded border ${
+                                settings.aiModel === model.name ? 'border-ide-accent' : 'border-ide-border'
+                            } hover:border-ide-accent/50 transition-colors`}
+                        >
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <Cpu size={14} className={settings.aiModel === model.name ? 'text-ide-accent' : 'text-gray-500'} />
+                                    <span className="text-xs text-white font-semibold">{model.name}</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    {settings.aiModel === model.name && (
+                                        <span className="text-[8px] px-1.5 py-0.5 bg-ide-accent/20 text-ide-accent rounded font-bold">ACTIVE</span>
+                                    )}
+                                    <button
+                                        onClick={() => handleDelete(model.name)}
+                                        className="text-gray-500 hover:text-red-400 p-1 rounded hover:bg-[#3c3c3c]"
+                                        title="Delete model"
+                                    >
+                                        <Trash2 size={12} />
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-3 mt-2 text-[10px] text-gray-500">
+                                <span>{formatModelSize(model.size)}</span>
+                                {model.details?.parameter_size && <span>{model.details.parameter_size}</span>}
+                                {model.details?.quantization_level && <span>{model.details.quantization_level}</span>}
+                            </div>
+                            {settings.aiModel !== model.name && (
+                                <button
+                                    onClick={() => updateSetting('aiModel', model.name)}
+                                    className="mt-2 w-full py-1 bg-[#3c3c3c] hover:bg-[#4c4c4c] text-white text-[10px] font-bold rounded transition-colors"
+                                >
+                                    Set as Active
+                                </button>
+                            )}
+                        </div>
+                    ))}
+                    {localModels.length === 0 && (
+                        <div className="text-xs text-gray-500 italic text-center py-8">
+                            {ollamaStatus === 'connected'
+                                ? 'No models installed. Pull a model to get started.'
+                                : 'Connect to Ollama to see available models.'}
+                        </div>
+                    )}
+                </div>
             </div>
         </div>
     );
