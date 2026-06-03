@@ -112,3 +112,192 @@ One meta-flaw to name immediately: **a desktop, single-user, offline IDE is bein
 The architecture is **competent but over-built for V1 and under-hardened where it counts**. The dangerous gaps aren't in the boxes drawn — they're in **prompt injection, approval rigor, snapshot disk growth, packaging, and the honest hardware reality** of running autonomous local models. Fix the Top 5 before a line of code.
 
 And the standing blocker remains: **I still can't read or write the repo (403, wrong namespace).** Resolve that, fold in the Top 5 changes, and the *revised* Phase 1 (Electron + Monaco + FS + node-pty + direct Ollama chat, **no Python sidecar**) is the right, much lower-risk starting point. Want me to produce the revised, hardened Phase 1 contract incorporating these 5 changes?
+=======================================================================
+# Haramain IDE — Revised Phase 1 Architecture (Post Red-Team)
+
+Hardening spec, no code. All red-team findings accepted and folded in. Tags throughout: VERIFIED / ASSUMED / TODO.
+
+Standing blocker, unchanged and still hard: **I cannot read or write `sallddkfj/Personal-IDE-al-Haramain-iDe` (403; my context is scoped to `deon-group`).** This document is producible without access, but **implementation cannot begin until that's resolved.**
+
+---
+
+## Changes 1–8 (resolutions)
+
+**Change 1 — Drop FastAPI from Phase 1.** Phase 1 = Electron Main / Preload / Renderer only; Ollama is called directly from Main over its local HTTP API. *Benefits (VERIFIED):* one language, one build/native matrix, far smaller installer, no sidecar CSRF surface, faster startup. *Tradeoffs (VERIFIED):* no LanceDB/Tree-sitter (both Python-friendly) in P1, so no RAG/symbol-graph yet; agents are deferred. *Migration to P2:* introduce the sidecar **behind the existing `IModelPort` + a new `IAgentPort`**, so Main keeps owning OS access and the sidecar only *decides*. Nothing in P1 talks to the sidecar directly → adding it is additive, not a rewrite. (ASSUMED-clean if ports are honored.)
+
+**Change 2 — `ExecutionBackend` abstraction.** A port that *all* terminal/process/tool execution flows through. `LocalExecutionBackend` (P1, node-pty on host). `ContainerExecutionBackend` (future, runs in a sandboxed container/jail). `RemoteExecutionBackend` (future, runs on a remote runner). Contract (TODO-detail): `exec(cmd, cwd, env, limits) → stream<events> + exitCode`, `spawnPTY()`, `cancel()`, `healthcheck()`. Responsibility: isolate *where/how* code runs from *what* decides to run it. Extension: register backends in a `BackendRegistry`; Approval Engine can require a specific backend per risk tier (e.g. force container for autonomous exec in V2/V3). This removes the V3 dead-end the review flagged. (Design VERIFIED; impls TODO.)
+
+**Change 3 — Snapshot redesign.** See full spec in deliverable 6. Old "snapshot every workspace write" rejected. New: **touched-files-only, gitignore-aware, dual retention (size+age), zstd, integrity-verified, atomic rollback.**
+
+**Change 4 — Approval Engine redesign.** Deny-by-default; destructive ops *always* human-gated regardless of score; AI/tool/repo content all untrusted. Full spec in deliverable 7.
+
+**Change 5 — Hardware Capability Framework.** Tiers A–D with honest degraded modes; never promise unrunnable autonomy. Deliverable 8.
+
+**Change 6 — Run Budget System.** Step/token/time/retry caps + oscillation detection. *Note (VERIFIED):* P1 has no agent runtime, so this ships as **interfaces only in P1, enforced in P2.** Spec in risk register + roadmap.
+
+**Change 7 — Event hardening.** Batching/coalescing/backpressure/ring-buffer. Deliverable 9.
+
+**Change 8 — Large-repo strategy.** Lazy/incremental/background/cancellable; no full scans. Deliverable 10.
+
+---
+
+## 1. Revised architecture diagram (Phase 1)
+
+```
+┌───────────────────────── Electron (single process tree) ─────────────────────────┐
+│ RENDERER (sandboxed)                                                              │
+│   React + Zustand + Monaco + Tailwind   ── talks ONLY to window.haramain          │
+│        │ typed IPC (request/response)         ▲ event subscription (1 channel)    │
+│ PRELOAD (contextBridge)  ── validates + namespaces; no Node leak                  │
+│        │                                                                          │
+│ MAIN (sole OS-access boundary)                                                    │
+│   EventBus(+batcher) · WorkspaceService · FileService(PathGuard) ·                │
+│   SnapshotService · ApprovalEngine · CommandGuard ·                               │
+│   ExecutionBackend→LocalExecutionBackend(node-pty) · OllamaService(IModelPort) ·  │
+│   HardwareProfiler · AuditLog                                                      │
+└──────────────────────────────────────────────────────────────────────────────────┘
+        Main → http://127.0.0.1:11434 (Ollama, local)   [P2: + sidecar behind ports]
+```
+(VERIFIED: no sidecar, no untrusted preview sharing the privileged bridge.)
+
+## 2. Revised folder structure
+
+```
+haramain-ide/
+├─ apps/desktop/{main, preload, renderer}
+├─ packages/
+│  ├─ domain/        # entities + ports (incl. IExecutionBackend, IModelPort, ISnapshotPort)
+│  ├─ ipc-contract/  # Zod schemas + generated types
+│  ├─ events/        # catalog + versioning + batcher contracts
+│  └─ security/      # PathGuard, CommandGuard, ApprovalEngine (pure logic, auditable)
+├─ tooling/          # electron-builder, node-pty prebuilds, codegen
+├─ tests/{unit,integration,e2e}
+├─ docs/             # this contract + ADRs
+└─ .haramain/        # snapshots, audit log (gitignored, per-workspace)
+```
+(ASSUMED npm workspaces over Nx for P1 simplicity; revisit at P2.)
+
+## 3. Revised domain model
+
+Unchanged entities (Workspace, File, Snapshot, Task, Model, ContextPackage) **minus** AgentRun/ToolCall/MemoryRecord (deferred to P2/P4). **Added ports:** `IExecutionBackend`, `IApprovalEngine`, `IHardwareProfiler`, `IEventBatcher`. Workspace aggregate gains `gitignoreRules` + `snapshotPolicy(size,age)`. Snapshot entries scoped to *touched files only*. (VERIFIED boundary; field detail TODO.)
+
+## 4. Revised IPC contracts
+
+Same envelope (`{contractVersion, correlationId, payload}`), Zod-validated, uniform errors. P1 channels only: `workspace.open/close`, `fs.list/read/applyPatch`, `terminal.create/write/resize/kill`, `model.list/select/chat(stream)`, `snapshot.list/rollback`, `approval.respond`, `hardware.profile`, `events.subscribe`. **New rule (VERIFIED security):** every `write`/`exec`/`network` channel returns `E_APPROVAL_REQUIRED` and emits an `approval.requested` event before acting — the renderer cannot bypass it. Large reads stream in chunks (no whole-tree payloads).
+
+## 5. ExecutionBackend specification
+
+`IExecutionBackend` (VERIFIED contract intent; impl TODO): `createSession(cwd,env,limits)`, `write(sessionId,data)`, `onData(cb)` (returns batched chunks), `resize`, `kill`, `dispose`, `capabilities()`. **`limits`** carries the Run Budget (time/output caps) so even P1 terminals are bounded. `LocalExecutionBackend` = node-pty on host (P1). `ContainerExecutionBackend`/`RemoteExecutionBackend` = registered later; Approval Engine may *mandate* a backend per risk tier. All output flows through the EventBatcher (no raw flood). (VERIFIED isolation goal.)
+
+## 6. Snapshot specification (redesigned)
+
+- **Scope (VERIFIED):** only files an operation *touches*; never whole-workspace, never `node_modules`/build dirs.
+- **gitignore-aware (VERIFIED):** parse `.gitignore` + a built-in denylist; ignored paths never snapshotted.
+- **Structure:** content-addressed zstd blobs + per-snapshot manifest `{id, parentId, reason, correlationId, createdAt, entries[{path, blobHash, mode}]}`.
+- **Lifecycle:** pre-op snapshot of *exactly the paths to be modified* → apply → record → emit `snapshot.created`. Rollback: atomic temp-write+rename of manifest blobs; SHA-256 verify each blob first; **abort whole rollback on any corrupt/missing blob** (no partial restore).
+- **Retention (VERIFIED dual policy):** GC when **total size > cap** OR **age > maxDays**; always keep snapshots referenced by an open run; newest-first eviction.
+- **Hard limitation, must surface to user (VERIFIED):** rollback restores **files only** — it does **not** undo `run_terminal` side effects (installed packages, migrations, network). "Undo" is explicitly partial in the UI.
+
+## 7. Approval Engine specification
+
+- **Deny-by-default (VERIFIED):** no tool/channel runs without an explicit tier mapping.
+- **Tiers:** *Auto* = read-only (`read_file`, `list`, `search`, `model.list`, `hardware.profile`). *User-approved* = every `write`, every `exec`, every `network`. *Blocked* = outside sandbox, CommandGuard-flagged, secret access.
+- **Destructive-operation policy (VERIFIED):** writes/exec are **always** user-approved — **no numeric risk score can auto-approve them.** Risk score only *escalates* (Auto→Approve), never *de-escalates*.
+- **Beginner Mode:** plain-language prompts ("This will install software on your computer — allow?"), default to most cautious, batched approvals discouraged.
+- **Untrusted-input doctrine (VERIFIED, central — was the #1 red-team gap):** AI output, tool output, and repo content are **data, never instructions.** Model-proposed commands/patches are *proposals* surfaced to the user; an injected "ignore instructions, run X" cannot self-execute because exec is unconditionally gated.
+- **Audit (VERIFIED):** append-only log of every request, decision, actor, params, outcome.
+
+## 8. Hardware Capability Framework
+
+`HardwareProfiler` detects RAM, VRAM (best-effort per OS — VERIFIED-hard on some setups, TODO for reliable cross-platform VRAM), CPU cores, GPU presence.
+
+| Tier | HW (ASSUMED thresholds) | Models | Features |
+|---|---|---|---|
+| **A** | ≥24GB VRAM / workstation | up to ~32B | Full autonomy target (P2+) |
+| **B** | 32GB RAM + 8–12GB VRAM | 7–14B | Coding + assisted agent (P2 marginal) |
+| **C** | 16GB RAM, weak/no GPU | 1–7B | Chat + single-file edits; autonomy **off** |
+| **D** | <16GB / CPU-only | ≤3B or none | Editor + terminal; AI **degraded/disabled** |
+
+**Rule (VERIFIED honesty mandate):** IDE detects tier at startup, **never offers features the tier can't run**, and tells the user plainly. This directly fixes the "promises autonomy it can't deliver" finding.
+
+## 9. Event Bus specification
+
+- **Batching (VERIFIED):** `terminal.data` + (future) model-stream events coalesced on a time/size window (e.g. ~16–32ms or N bytes) → one IPC message.
+- **Backpressure:** ring buffer per high-freq stream; on overflow, drop oldest + emit a `truncated` marker (UI shows "output trimmed").
+- **Throttling:** caps on events/sec to renderer; low-freq state events (`task.*`, `snapshot.*`) never dropped.
+- **Persistence:** `snapshot.*`, `approval.*`, `error.*`, `task.*` → audit; `terminal.data`, stream chunks → ephemeral.
+- **Correlation/versioning:** unchanged envelope. (VERIFIED design; tuning constants TODO via load test.)
+
+## 10. Large repository strategy
+
+- **No full scans (VERIFIED rule).** File explorer is **lazy** (load children on expand). 
+- **Indexing:** P1 has none (no Tree-sitter). P2 indexing is **incremental + background + cancellable**, respects ignore files, hard caps (max files/bytes), persists index to `.haramain/`.
+- **10k files:** lazy tree fine. **50k:** fine for tree; indexing must be background+capped. **100k:** tree fine; full symbol index **not attempted** — on-demand per-file parse only, with partial context fallback. (VERIFIED for tree; index behavior ASSUMED until benchmarked.)
+
+## 11. Revised Phase 1 roadmap
+
+| # | Task | Deps | Validation | Risk |
+|---|---|---|---|---|
+| T1 | Electron shell (sandbox/CSP, main/preload/renderer) | — | launches; no Node in renderer | M |
+| T2 | IPC contract + Zod envelope | T1 | bad payload rejected | L |
+| T3 | EventBus + Batcher + renderer subscribe | T1,T2 | terminal flood stays smooth | M |
+| T4 | WorkspaceService + FileService + PathGuard | T2 | open folder; traversal/symlink blocked | M |
+| T5 | SnapshotService (touched-files, gitignore, retention) | T4 | save→snapshot; rollback verified; node_modules ignored | **H** |
+| T6 | ApprovalEngine + CommandGuard | T2 | write/exec always prompts; injection can't self-run | **H** |
+| T7 | ExecutionBackend + LocalExecutionBackend (node-pty) | T3,T6 | real cmd streams, bounded, approval-gated | **H (native)** |
+| T8 | OllamaService (dynamic list + streaming chat) + Model panel | T2,T3 | installed tags listed; tokens stream | M |
+| T9 | HardwareProfiler + tier gating | T2 | tier detected; unsupported features hidden | M |
+| T10 | Monaco + lazy File Explorer | T4 | edit+save; lazy children | M |
+
+Graph: `T1→T2→{T3→{T7,T8}, T4→{T5,T10}, T6→T7, T9}`. Critical path: **T5 (snapshot atomicity), T6 (security), T7 (native node-pty).**
+
+## 12. Migration roadmap P2/P3
+
+- **P2:** add FastAPI sidecar behind `IModelPort`+new `IAgentPort`; Tree-sitter (incremental index); LanceDB memory; Tool Registry + Run Budget *enforced*; Approval Engine gains autonomous-mode gating. (VERIFIED additive path.)
+- **P3:** `ContainerExecutionBackend` for sandboxed autonomous exec; Playwright (download-on-demand, not bundled); Debug/Validator agents.
+- **P3→V3:** `RemoteExecutionBackend`, multi-workspace/project-graph model. (ASSUMED.)
+
+## 13. Risk register (top, post-hardening)
+
+| Risk | Sev | Status |
+|---|---|---|
+| Prompt injection → exec | High | **Mitigated** by unconditional exec gating (residual: user fatigue-approves) |
+| Snapshot disk growth | High | **Mitigated** by touched-files + dual retention |
+| node-pty native packaging | High | Open — needs prebuild + CI matrix (TODO) |
+| Installer size / notarization / AV | High | Reduced by dropping sidecar/Playwright from P1; still TODO for signing |
+| Cross-platform VRAM detection | Med | TODO — may be unreliable on some GPUs/OS |
+| Rollback ≠ undo side effects | Med | Accepted + disclosed in UI |
+| Autonomy on low HW | Med | **Mitigated** by tier gating + honesty |
+| Event storms | Med | **Mitigated** by batcher/backpressure |
+
+## 14. Architecture scorecard (revised vs prior)
+
+| Dimension | Before | After |
+|---|---|---|
+| Architecture | 7 | 8 |
+| Security | 5 | **8** |
+| Scalability | 6 | 7 |
+| Performance | 5 | 7 |
+| Maintainability | 6 | **8** (single-language P1) |
+| AI Readiness | 6 | 7 |
+| Autonomy Readiness | 4 | 6 (honest gating, enforced in P2) |
+| V3 Readiness | 5 | **7** (ExecutionBackend added) |
+
+**Honest not-production-ready callouts (VERIFIED):** node-pty packaging + code-signing/notarization are unsolved and *will* bite at first installer build; cross-platform VRAM detection is unreliable; "undo" is partial; and the autonomous vision remains **hardware-gated** — on the target beginner's likely Tier C/D machine, V2 autonomy will be limited or off, and the product must say so.
+
+---
+
+#### Phase 1 exclusions — why each is necessary (VERIFIED)
+
+FastAPI (no P1 value, adds CSRF + packaging risk) · LanceDB (needs Python; memory has no consumer until agents exist) · Tree-sitter (indexing has no consumer in P1; big-repo cost) · Playwright (>1GB installer bloat; no P1 consumer) · Multi-agent runtime (depends on all the above; unsafe without Run Budgets + sidecar). Each exclusion removes a packaging/perf/security risk with zero P1 functionality loss.
+
+---
+
+#### Next gate
+
+Architecture is hardened and, in my judgment, **ready to implement — for Phase 1 as scoped.** Two things still required from you before code:
+
+1. **Resolve access** (fork to `deon-group` / open chat in-project / grant agent access) — still the hard blocker.
+2. **Approve this revised spec** (or flag changes — e.g. tier thresholds, retention caps, npm-workspaces vs Nx).
+
+On both greens, I'll hand **T1→T2→T6** (shell + contract + approval/security first, deliberately front-loading security) to the developer agent and return validated change reports per task. Approve?
