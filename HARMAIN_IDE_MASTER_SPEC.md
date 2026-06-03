@@ -112,7 +112,9 @@ One meta-flaw to name immediately: **a desktop, single-user, offline IDE is bein
 The architecture is **competent but over-built for V1 and under-hardened where it counts**. The dangerous gaps aren't in the boxes drawn — they're in **prompt injection, approval rigor, snapshot disk growth, packaging, and the honest hardware reality** of running autonomous local models. Fix the Top 5 before a line of code.
 
 And the standing blocker remains: **I still can't read or write the repo (403, wrong namespace).** Resolve that, fold in the Top 5 changes, and the *revised* Phase 1 (Electron + Monaco + FS + node-pty + direct Ollama chat, **no Python sidecar**) is the right, much lower-risk starting point. Want me to produce the revised, hardened Phase 1 contract incorporating these 5 changes?
+
 =======================================================================
+
 # Haramain IDE — Revised Phase 1 Architecture (Post Red-Team)
 
 Hardening spec, no code. All red-team findings accepted and folded in. Tags throughout: VERIFIED / ASSUMED / TODO.
@@ -301,3 +303,319 @@ Architecture is hardened and, in my judgment, **ready to implement — for Phase
 2. **Approve this revised spec** (or flag changes — e.g. tier thresholds, retention caps, npm-workspaces vs Nx).
 
 On both greens, I'll hand **T1→T2→T6** (shell + contract + approval/security first, deliberately front-loading security) to the developer agent and return validated change reports per task. Approve?
+
+==================================================================
+
+# Haramain IDE — Phase 1 Implementation Roadmap
+
+Planning artifact only. Scope = the 10 approved Phase 1 tasks (T1–T10). No code, no redesign. Tags: VERIFIED / ASSUMED / TODO.
+
+## 1. Master dependency graph
+
+```
+T1 Electron Shell
+ ├─► T2 IPC Contract ──┬─► T3 Event Bus + Batcher ──┬─► T7 ExecutionBackend (node-pty)
+ │                     │                            └─► T8 Ollama Service + Model Panel
+ │                     ├─► T4 Workspace + File + PathGuard ──┬─► T5 Snapshot Service
+ │                     │                                     └─► T10 Monaco + Lazy Explorer
+ │                     ├─► T6 Approval Engine + CommandGuard ─► (gates T7)
+ │                     └─► T9 Hardware Profiler + Tier Gating
+ └─────────────────────────────────────────────────────────────────────────────────────
+Edges into T7: T3 (event streaming) + T6 (exec must be approval-gated)  [VERIFIED: T7 needs both]
+```
+Roots: T1. Convergence nodes: T2 (everything depends on it), T7 (needs T3+T6). (VERIFIED from approved architecture.)
+
+## 2. Critical path analysis
+
+**Longest dependency chain (VERIFIED):**
+`T1 → T2 → T6 → T7` and `T1 → T2 → T3 → T7`.
+
+T7 is the convergence point requiring **both** the event pipeline (T3) and the security gate (T6). Because T6 (security) and T7 (native node-pty) are the two highest-risk tasks and they're sequential, **the critical path is `T1 → T2 → T6 → T7`.** T5 (snapshot atomicity) is a parallel high-risk chain off T4 but not on the longest path.
+
+**Critical-path tasks:** T1, T2, T6, T7. Any slip here slips Phase 1. (VERIFIED.)
+
+## 3. Exact task order
+
+Front-load the contract and security, per "security wins":
+
+1. **T1** (shell)
+2. **T2** (IPC contract) — unblocks everything
+3. **T6** (Approval + CommandGuard) — must exist *before* any exec path
+4. **T3** (Event bus + batcher) — parallelizable with T6, but ordered here as T7 input
+5. **T4** (Workspace/File/PathGuard) — parallelizable with T3/T6
+6. **T9** (Hardware profiler) — parallelizable, low coupling
+7. **T7** (ExecutionBackend/node-pty) — after T3+T6
+8. **T8** (Ollama service) — after T2+T3
+9. **T5** (Snapshot) — after T4
+10. **T10** (Monaco + explorer) — after T4
+
+## 4. Task breakdown
+
+**T1 — Electron Shell**
+- Objective: secure main/preload/renderer with `sandbox/contextIsolation` on, `nodeIntegration` off, strict CSP, `window.haramain` bridge surface.
+- Deps: none. Files: `apps/desktop/main/bootstrap.ts`, `preload/api.ts`, renderer wiring, electron build config, tsconfigs.
+- Complexity: **M** · Risk: **Medium** (migrating live Vite app).
+- Validation: app launches; renderer has no Node (`process`/`require` undefined); `window.haramain` defined; `tsc` clean.
+- DoD: launches dev+prod; security flags verified; no TS errors.
+
+**T2 — IPC Contract**
+- Objective: typed, Zod-validated envelope (`contractVersion, correlationId, payload`), uniform error model, versioning; P1 channel definitions only.
+- Deps: T1. Files: `packages/ipc-contract/*`, preload binding.
+- Complexity: **M** · Risk: **Low**.
+- Validation: invalid payloads rejected at boundary; version mismatch fails loudly.
+- DoD: schemas published; round-trip typed; rejection tested.
+
+**T6 — Approval Engine + CommandGuard**
+- Objective: deny-by-default tiers; write/exec/network **always** user-approved; destructive ops never auto-approved; untrusted-input doctrine; audit log.
+- Deps: T2. Files: `packages/security/{approval,command-guard,audit}`.
+- Complexity: **L** · Risk: **High** (core security boundary).
+- Validation: write/exec always prompts; injected "run X" cannot self-execute; every decision audited.
+- DoD: tier map enforced; CommandGuard classifies dangerous cmds; audit append-only verified.
+
+**T3 — Event Bus + Batcher**
+- Objective: typed bus + coalescing/throttling/backpressure + ring buffer; renderer single subscription channel.
+- Deps: T1, T2. Files: `packages/events/*`, main bus, renderer subscribe.
+- Complexity: **M** · Risk: **Low/Med** (tuning).
+- Validation: high-freq flood stays smooth; overflow emits truncated marker; low-freq events never dropped.
+- DoD: batching + backpressure verified under load test.
+
+**T4 — Workspace + File + PathGuard**
+- Objective: open workspace, read/list, apply patch; path normalization/realpath; symlink-escape + traversal blocked; gitignore awareness.
+- Deps: T2. Files: main services, `packages/security/path-guard`.
+- Complexity: **M** · Risk: **Medium**.
+- Validation: open folder; `..`/symlink escape rejected (`E_PATH`); large reads chunked.
+- DoD: FS ops behind PathGuard; escape tests pass.
+
+**T9 — Hardware Profiler + Tier Gating**
+- Objective: detect RAM/VRAM/CPU/GPU; assign Tier A–D; hide features tier can't run.
+- Deps: T2. Files: main profiler service, renderer gating.
+- Complexity: **M** · Risk: **Medium** (VRAM detection unreliable — TODO).
+- Validation: tier reported; unsupported features hidden; honest messaging.
+- DoD: tiers wired; cross-platform detection best-effort documented.
+
+**T7 — ExecutionBackend + LocalExecutionBackend (node-pty)**
+- Objective: `IExecutionBackend` + node-pty local impl; multi-bounded sessions; output via batcher; exec gated by T6.
+- Deps: T3, T6. Files: main execution backend, node-pty integration, prebuild tooling.
+- Complexity: **L** · Risk: **High** (native ABI rebuild).
+- Validation: real command streams bounded output; exec always approval-gated; rebuild works on target OS matrix.
+- DoD: terminal runs through backend; budgets enforced; native build documented.
+
+**T8 — Ollama Service + Model Panel**
+- Objective: dynamic `model.list` (no hardcoded tags), streaming chat over `IModelPort`; model management UI.
+- Deps: T2, T3. Files: main ollama service, renderer Model panel.
+- Complexity: **M** · Risk: **Medium**.
+- Validation: installed tags listed dynamically; tokens stream; missing-Ollama handled gracefully.
+- DoD: list+stream verified; switch handled with warning.
+
+**T5 — Snapshot Service**
+- Objective: touched-files-only, gitignore-aware, zstd, dual retention (size+age), integrity-verified atomic rollback.
+- Deps: T4. Files: main snapshot service, `.haramain/` layout.
+- Complexity: **L** · Risk: **High** (atomicity/corruption).
+- Validation: save→`snapshot.created`; rollback restores or aborts cleanly on corruption; `node_modules` ignored; retention GC works.
+- DoD: atomic rollback verified; partial-undo limitation surfaced.
+
+**T10 — Monaco + Lazy File Explorer**
+- Objective: Monaco editing + save; lazy-loaded tree (no full scan).
+- Deps: T4. Files: renderer panels.
+- Complexity: **M** · Risk: **Medium** (Monaco + CSP worker config).
+- Validation: edit+save persists; children lazy-load; Monaco workers load under CSP.
+- DoD: edit/save works; explorer lazy; CSP intact.
+
+## Synthesis
+
+**Parallelizable (VERIFIED):** after T2 → {T3, T4, T6, T9} can run concurrently. After T4 → {T5, T10} concurrent. T8 parallel with T7 once T3 ready.
+
+**Blockers:** T1 blocks all; **T2 is the universal blocker**; T6 blocks T7; T3 blocks T7+T8; T4 blocks T5+T10.
+
+**Highest risk:** **T6** (security boundary), **T7** (native node-pty), **T5** (snapshot atomicity). These get senior attention + extra validation.
+
+**Recommended order:** `T1 → T2 → [T6 ∥ T3 ∥ T4 ∥ T9] → T7 → [T8 ∥ T5 ∥ T10]`, scheduling T6 first within the parallel band so the security gate exists before T7/T5 touch exec/disk.
+
+Roadmap complete. Ready to brief the implementation of **T1** (strictly T1, no T2+) whenever you give the go.
+
+==============================================================================================
+
+# Recommended Implementation Order
+
+Validated against the Revised Phase 1 Architecture, Red Team Review, and T1–T10 roadmap. No redesign. Security gates precede every execution capability, per the architecture's "untrusted by default" doctrine. Tags: VERIFIED / ASSUMED / TODO.
+
+#### T1 — Electron Shell
+- **Priority:** 1 (foundational).
+- **Dependencies:** none.
+- **Why first:** Defines the process model (main/preload/renderer) and the security envelope (`sandbox`, `contextIsolation`, `nodeIntegration:false`, strict CSP). Every later task lives inside this boundary; building anything before it means rebuilding on an insecure base. (VERIFIED.)
+- **Validation gate:** app launches; renderer has zero Node access; `window.haramain` present; `tsc` clean.
+- **Risk:** Medium.
+
+#### T2 — IPC Contract
+- **Priority:** 2 (universal blocker).
+- **Dependencies:** T1.
+- **Why before later:** Every cross-process call (FS, exec, model, snapshot, approval, events) crosses IPC. The Zod-validated envelope + uniform error model is the *enforcement point* for the security boundary. No service may be built before the contract or it will bypass validation. (VERIFIED — T2 gates 8 of 10 tasks.)
+- **Validation gate:** invalid payloads rejected at boundary; version mismatch fails loudly.
+- **Risk:** Low.
+
+#### T6 — Approval Engine + CommandGuard
+- **Priority:** 3 (security-before-execution mandate).
+- **Dependencies:** T2.
+- **Why before later:** This is the deny-by-default gate that makes write/exec/network always human-approved and neutralizes prompt injection. The architecture forbids any execution path existing before its gate. Therefore T6 **must** precede T7. (VERIFIED — this is the single most important ordering rule.)
+- **Validation gate:** write/exec always prompts; injected "run X" cannot self-execute; every decision audited (append-only).
+- **Risk:** High.
+
+#### T3 — Event Bus + Batcher
+- **Priority:** 4 (parallel with T4/T9).
+- **Dependencies:** T1, T2.
+- **Why before later:** T7 and T8 stream high-frequency output; without batching/backpressure first, they would flood the renderer (red-team finding #7). The pipeline must exist before its producers. (VERIFIED.)
+- **Validation gate:** flood stays smooth; overflow emits truncated marker; low-freq events never dropped.
+- **Risk:** Low/Medium.
+
+#### T4 — Workspace + File + PathGuard
+- **Priority:** 5 (parallel with T3/T6/T9).
+- **Dependencies:** T2.
+- **Why before later:** T5 (snapshot) and T10 (editor) both mutate/read files and must go through PathGuard (sandbox escape defense). No file mutation may exist before the guard. (VERIFIED.)
+- **Validation gate:** open folder; `..`/symlink escape rejected; large reads chunked.
+- **Risk:** Medium.
+
+#### T9 — Hardware Profiler + Tier Gating
+- **Priority:** 6 (parallel, low coupling).
+- **Dependencies:** T2.
+- **Why before later:** T8's model UI must hide models the tier can't run (honesty mandate). Profiler should exist before model surfacing. (VERIFIED ordering; VRAM detection TODO-reliability.)
+- **Validation gate:** tier reported; unsupported features hidden.
+- **Risk:** Medium.
+
+#### T7 — ExecutionBackend + LocalExecutionBackend (node-pty)
+- **Priority:** 7 (gated).
+- **Dependencies:** T3 (streaming) + T6 (approval gate).
+- **Why gated:** First task with real OS-execution power. Architecture mandates it cannot exist until both the security gate (T6) and event pipeline (T3) are proven. (VERIFIED — highest-stakes ordering.)
+- **Validation gate:** real command streams bounded output; exec always approval-gated; native rebuild succeeds on target OS.
+- **Risk:** High (native ABI + execution power).
+
+#### T8 — Ollama Service + Model Panel
+- **Priority:** 8 (parallel with T5/T10).
+- **Dependencies:** T2, T3.
+- **Why ordered:** Needs the contract and the event/stream pipeline; depends on T9 for tier-correct model display. No execution power, so lower gate than T7. (VERIFIED.)
+- **Validation gate:** installed tags listed dynamically (no hardcoded tags); tokens stream; missing-Ollama handled gracefully.
+- **Risk:** Medium.
+
+#### T5 — Snapshot Service
+- **Priority:** 9 (parallel with T8/T10).
+- **Dependencies:** T4.
+- **Why ordered:** Wraps file mutations; must come after FileService/PathGuard. It is also the **rollback foundation** for all later destructive operations. (VERIFIED.)
+- **Validation gate:** save→`snapshot.created`; atomic rollback restores or cleanly aborts on corruption; `node_modules` ignored; retention GC works; partial-undo limitation surfaced.
+- **Risk:** High (atomicity/corruption).
+
+#### T10 — Monaco + Lazy File Explorer
+- **Priority:** 10 (last, parallel-capable).
+- **Dependencies:** T4.
+- **Why last:** Pure presentation over the FS layer; no other task depends on it, so it absorbs schedule slack. (VERIFIED.)
+- **Validation gate:** edit+save persists; children lazy-load (no full scan); Monaco workers load under CSP.
+- **Risk:** Medium.
+
+# Critical Path
+
+`T1 → T2 → T6 → T7`
+
+T7 (execution) requires T6 (security gate) **and** T3 (event pipeline). Since T6 is itself high-risk and sits between T2 and T7, the security chain *is* the critical path. (VERIFIED.) T5's high-risk atomicity work is a parallel chain (`T2→T4→T5`) off the critical path but is the second-most-watched stream.
+
+# Parallel Work Streams
+
+- **Stream A (critical/security):** T1 → T2 → T6 → T7.
+- **Stream B (data/events):** T3 (after T2), feeds T7 + T8.
+- **Stream C (filesystem):** T4 (after T2) → {T5, T10}.
+- **Stream D (hardware):** T9 (after T2), feeds T8.
+- After T2 completes, **B, C, D run concurrently** with T6; T7 joins once T6+T3 done; T8/T5/T10 follow.
+
+# Go / No-Go Gates
+
+- **Gate 1 (after T1):** security flags verified, no Node in renderer → else **No-Go**, fix shell.
+- **Gate 2 (after T2):** boundary rejects invalid payloads → universal blocker; **No-Go** halts all streams.
+- **Gate 3 (after T6) — HARD GATE:** write/exec always prompts; injection cannot self-execute; audit works. **No execution task (T7) may start until this passes.** (VERIFIED, non-negotiable.)
+- **Gate 4 (after T3):** backpressure proven under flood → required before T7/T8.
+- **Gate 5 (after T7):** exec gated + native build reproducible on OS matrix.
+- **Gate 6 (after T5):** atomic rollback + corruption-abort proven.
+
+# Top 5 Failure Modes During Implementation
+
+1. **Building a service before T2** → bypasses validation, silent security hole. Mitigation: hard Gate 2.
+2. **T7 started before T6 fully passes** → unguarded execution power exists even briefly. Mitigation: Gate 3 is a hard stop.
+3. **node-pty native ABI mismatch** (T7) → "works locally, broken installer." Mitigation: prebuild + CI OS matrix early.
+4. **Snapshot non-atomic rollback** (T5) → partial restore corrupts workspace. Mitigation: verify-then-atomic-rename, abort-on-corruption, tested before merge.
+5. **Event flood from T7/T8 before batcher proven** (T3) → renderer freeze. Mitigation: Gate 4 before wiring producers.
+
+# Final Recommended Build Sequence
+
+1. **T1** → Gate 1
+2. **T2** → Gate 2 (universal unblock)
+3. Open parallel band: **T6** (priority within band), **T3**, **T4**, **T9**
+4. **Gate 3 (hard, security)** on T6 + **Gate 4** on T3
+5. **T7** (only after Gates 3+4)
+6. **T8**, **T5**, **T10** in parallel → Gates 5 & 6
+7. Phase 1 acceptance: all gates green, validation criteria VERIFIED in real CI.
+
+**Rollback points:** each task merges behind its gate; snapshot (T5) becomes the runtime rollback mechanism, but during *implementation*, per-task feature branches gated by the above are the rollback boundaries.
+
+This sequence puts the two highest-risk, highest-consequence items (T6 security, T7 execution) on a deliberately serialized critical path, keeps everything else parallel, and ensures **no execution capability ever exists before its security gate** — prioritizing architecture integrity over speed, as required.
+
+This plan is ready for a coding agent to execute task-by-task. Give the word and I'll brief **T1** as the first work unit.
+
+=====================================================================================
+
+# T1 — Electron Shell Foundation (Pre-Code Plan)
+
+Scope confirmed: shell + secure window + preload bridge surface only. No IPC channels, no services, no Monaco. Tags: VERIFIED / ASSUMED / TODO.
+
+#### 1. Files to create/modify
+
+**Create:**
+- `apps/desktop/main/bootstrap.ts` — app lifecycle, single `BrowserWindow`, security flags, CSP header injection, dev/prod load logic.
+- `apps/desktop/main/window.ts` *(ASSUMED split for clarity; may fold into bootstrap)* — window factory.
+- `apps/desktop/preload/index.ts` — `contextBridge.exposeInMainWorld('haramain', …)` exposing a **minimal, channel-less** surface (version/handshake only; no FS/exec/IPC channels — those are T2+).
+- `apps/desktop/main/tsconfig.json`, `apps/desktop/preload/tsconfig.json` — isolated TS projects (CommonJS/Node target for main+preload).
+- `electron-builder` or `electron-vite` config *(see Risk 1 — choice TODO)*.
+- `.haramain/` left untouched (no runtime data in T1).
+
+**Modify:**
+- `package.json` — add `electron`, builder/runner devDeps; add `dev:desktop` / `build:desktop` scripts; set `main` entry to compiled main.
+- `tsconfig.json` (root) — reference the three TS projects (main/preload/renderer); ensure renderer stays DOM-targeted.
+- `vite.config.ts` — repoint existing Vite app as the **renderer** (base path for `file://` load in prod).
+- `index.html` — add strict CSP `<meta>` as defense-in-depth (primary CSP via header in main).
+- Existing `src/*` — **read-only reference only in T1**; repointed as renderer, not rewritten.
+
+VERIFIED: this is a *migration* of the live Vite app into Electron, not a rewrite.
+
+#### 2. Exact implementation plan
+
+1. Add Electron + builder/runner devDeps; define 3 TS build targets (main → CJS/Node, preload → CJS/Node sandbox-safe, renderer → existing Vite/DOM).
+2. **Main (`bootstrap.ts`):** create `BrowserWindow` with `webPreferences: { sandbox:true, contextIsolation:true, nodeIntegration:false, preload: <compiled preload> }`. App lifecycle (`whenReady`, `window-all-closed`, `activate`).
+3. **CSP:** inject strict policy via `session.defaultSession.webRequest.onHeadersReceived` (`default-src 'self'`; `script-src 'self'`; `worker-src 'self' blob:` reserved note for Monaco in T10 but **not loosened now**; no `unsafe-eval`). Mirror in `index.html` meta.
+4. **Load logic:** dev → Vite dev server URL; prod → built `index.html` via `loadFile`. Guard: block navigation to non-local origins; deny `window.open`/new-window.
+5. **Preload:** expose `window.haramain = { version, ready: true }` only. No channels, no Node objects leaked. (VERIFIED: zero capability surface in T1.)
+6. **Renderer:** confirm it boots under Electron with no `require`/`process`/`global` usage; if the existing app references Node APIs, flag (do not patch beyond what's needed to launch — architecture wins).
+
+#### 3. Risks
+
+- **R1 (Medium):** Tooling choice — `electron-vite` vs `electron-builder + manual vite`. Affects config files. **TODO:** confirm with you or let the dev agent pick `electron-vite` (ASSUMED best fit for existing Vite app).
+- **R2 (Medium):** Existing renderer may use browser-only assumptions incompatible with `file://` prod load (absolute paths). Mitigation: set Vite `base: './'`.
+- **R3 (Low/Med):** Strict CSP may break existing dev tooling (HMR needs `connect-src` for the dev server). Mitigation: dev vs prod CSP split, both still strict.
+- **R4 (Low):** `sandbox:true` forbids Node in preload bundlers that assume Node — preload must be bundled sandbox-safe. (VERIFIED constraint.)
+- **R5 (process):** I cannot run the build here, so all validation below is **ASSUMED until executed in real CI / by the dev agent.**
+
+#### 4. Validation checklist (must run in real environment)
+
+- [ ] `tsc --noEmit` clean across main/preload/renderer.
+- [ ] App launches in dev (Vite server) and prod (built files).
+- [ ] In renderer DevTools: `typeof require === 'undefined'`, `typeof process === 'undefined'`, `typeof global === 'undefined'`.
+- [ ] `window.haramain` defined; exposes only `{ version, ready }`; no Node objects reachable.
+- [ ] `webPreferences` confirmed: `sandbox:true`, `contextIsolation:true`, `nodeIntegration:false`.
+- [ ] CSP header present on document response; no `unsafe-eval`/`unsafe-inline` in script-src; external script load blocked.
+- [ ] Navigation to external origin blocked; new-window denied.
+
+#### 5. Definition of Done
+
+T1 is done when: the existing renderer launches inside a hardened Electron shell (dev + prod), the renderer has **provably zero Node access**, `window.haramain` exposes only a version/handshake (no channels), strict CSP is enforced via header, and `tsc` is clean — **all checklist items VERIFIED in a real build**, with **no IPC/FS/Ollama/Monaco/Terminal/Snapshot/Approval/Event code introduced.**
+
+---
+
+Plan is complete and strictly T1-scoped. Per your "no code until the plan is validated" rule, I'm holding here.
+
+**One decision to confirm before code:** R1 — go with **`electron-vite`** (my recommendation, cleanest fit for your existing Vite renderer) or `electron-builder` + manual wiring?
+
+Approve the plan (and the R1 choice) and I'll proceed to the T1 code step under exactly this scope.
